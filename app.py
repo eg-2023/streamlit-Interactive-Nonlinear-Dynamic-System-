@@ -104,7 +104,15 @@ def build_animation(t, x1, y1, x2, y2,
         if show_lower_path:
             trail2_x.append(x2[frame])
             trail2_y.append(y2[frame])
-            ax.plot(trail2_x, trail2_y, 'r-', linewidth=1, label='Lower path')
+            #ax.plot(trail2_x, trail2_y, 'r-', linewidth=1, label='Lower path')
+            ax.plot(
+                trail2_x,
+                trail2_y,
+                linestyle='--',
+                linewidth=1,
+                color='#ff7f0e',
+                label='Lower path'
+            )
 
         ax.plot([0, x1[frame]], [0, y1[frame]], 'o-', lw=2, color='#1f77b4')
         ax.plot([x1[frame], x2[frame]], [y1[frame], y2[frame]], 'o-', lw=2, color='#ff7f0e')
@@ -260,5 +268,6 @@ with tabs[1]:
         st.download_button("Download PNG", data=png_bytes, file_name="angles.png", mime="image/png")
 
 st.caption("Tip: GIF works without FFmpeg. For MP4, install FFmpeg and choose MP4 in the sidebar.")
+
 
 
