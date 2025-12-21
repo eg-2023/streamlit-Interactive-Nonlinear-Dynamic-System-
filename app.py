@@ -92,7 +92,7 @@ def build_animation(t, x1, y1, x2, y2,
         if show_upper_path:
             trail1_x.append(x1[frame])
             trail1_y.append(y1[frame])
-            ax.plot(trail1_x, trail1_y, 'g--', linewidth=1, label='Upper path')
+            ax.plot(trail1_x, trail1_y, 'b--', linewidth=1, label='Upper path')
         if show_lower_path:
             trail2_x.append(x2[frame])
             trail2_y.append(y2[frame])
@@ -252,3 +252,4 @@ with tabs[1]:
         st.download_button("Download PNG", data=png_bytes, file_name="angles.png", mime="image/png")
 
 st.caption("Tip: GIF works without FFmpeg. For MP4, install FFmpeg and choose MP4 in the sidebar.")
+
