@@ -1,7 +1,7 @@
 
 #!/usr/bin/env python3
 """
-Streamlit GUI for double pendulum:
+Streamlit GUI for Interactive Simulation and Visualization of Chaotic Nonlinear Behavior of a Double Pendulum Using Python:
 - Animation (GIF via Pillow; MP4 via FFmpeg)
 - Angle–time plot (Appendix A style)
 Run: streamlit run app.py
@@ -184,9 +184,9 @@ def angle_time_plot(theta1_deg, theta2_deg, z1, z2, m1, m2, L1, L2, g, duration,
 # ---------------------------------------
 # Streamlit UI
 # ---------------------------------------
-st.set_page_config(page_title="Double Pendulum (Streamlit GUI)", page_icon="🪀", layout="wide")
+st.set_page_config(page_title="Interactive Simulation and Visualization of Chaotic Nonlinear Behavior of a Double Pendulum Using Python (Streamlit GUI)", page_icon="🪀", layout="wide")
 
-st.title("🪀 Double Pendulum — Streamlit GUI")
+st.title("🪀 Interactive Simulation and Visualization of Chaotic Nonlinear Behavior of a Double Pendulum Using Python — Streamlit GUI")
 
 with st.sidebar:
     st.header("Parameters")
@@ -268,6 +268,7 @@ with tabs[1]:
         st.download_button("Download PNG", data=png_bytes, file_name="angles.png", mime="image/png")
 
 st.caption("Tip: GIF works without FFmpeg. For MP4, install FFmpeg and choose MP4 in the sidebar.")
+
 
 
 
