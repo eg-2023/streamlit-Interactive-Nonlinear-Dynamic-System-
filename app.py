@@ -18,11 +18,11 @@ from matplotlib.animation import FuncAnimation, FFMpegWriter, PillowWriter
 from scipy.integrate import odeint
 import streamlit as st
 
-# >>> Added only for progress handling <<<
+# -- dodatno za napredek --
 import time
 import threading
 
-FIXED_FPS = 50  # match typical browser GIF min-frame-delay (~20 ms) → ~50 FPS
+FIXED_FPS = 50  # ~20 ms min frame delay pri GIF -> ~50 FPS
 
 # ------------------------------
 # Physics and simulation (cached)
@@ -85,7 +85,7 @@ def resample_indices(n_in: int, frames_out: int) -> np.ndarray:
     return np.clip(idx.round().astype(int), 0, n_in - 1)
 
 # ------------------------------
-# >>> Progress helpers (added) <<<
+# Progress helpers
 # ------------------------------
 def run_in_thread(func, *args, **kwargs):
     """
@@ -102,9 +102,9 @@ def run_in_thread(func, *args, **kwargs):
     th.start()
     return th, result
 
-def drive_progress(progress, label_ph, start_pct, end_pct, est_seconds, label):
+def update_status_over_time(status, start_pct, end_pct, est_seconds):
     """
-    Drive progress from start_pct to end_pct over ~est_seconds.
+    Posodabljaj st.status() label od start_pct do end_pct v ~est_seconds.
     """
     start_pct = float(start_pct); end_pct = float(end_pct)
     width = max(1e-6, est_seconds)
@@ -112,16 +112,15 @@ def drive_progress(progress, label_ph, start_pct, end_pct, est_seconds, label):
     while True:
         elapsed = time.perf_counter() - t0
         frac = min(1.0, elapsed / width)
-        current = start_pct + (end_pct - start_pct) * frac
-        progress.progress(int(current))
-        label_ph.info(f"Simulating & rendering … {int(current)}%")
+        current = int(start_pct + (end_pct - start_pct) * frac)
+        status.update(label=f"Simulating & rendering … {current}%")
         if frac >= 1.0:
             break
         time.sleep(0.1)
 
-def drive_progress_while_thread(progress, label_ph, thread, start_pct, end_pct, est_seconds):
+def update_status_while_thread(status, thread, start_pct, end_pct, est_seconds):
     """
-    Drive progress while a background thread is alive.
+    Posodabljaj st.status() label medtem ko 'thread' teče.
     """
     start_pct = float(start_pct); end_pct = float(end_pct)
     width = max(1e-6, est_seconds)
@@ -129,16 +128,13 @@ def drive_progress_while_thread(progress, label_ph, thread, start_pct, end_pct, 
     while thread.is_alive():
         elapsed = time.perf_counter() - t0
         frac = min(1.0, elapsed / width)
-        current = start_pct + (end_pct - start_pct) * frac
-        progress.progress(int(current))
-        label_ph.info(f"Simulating & rendering … {int(current)}%")
+        current = int(start_pct + (end_pct - start_pct) * frac)
+        status.update(label=f"Simulating & rendering … {current}%")
         time.sleep(0.1)
-    # ensure we end at end_pct
-    progress.progress(int(end_pct))
-    label_ph.info(f"Simulating & rendering … {int(end_pct)}%")
+    status.update(label=f"Simulating & rendering … {int(end_pct)}%")
 
 # ------------------------------
-# Animation builder (blitting + exact duration via fixed 50 FPS)
+# Animation builder (blitting + fixed 50 FPS)
 # ------------------------------
 def build_animation(
     x1, y1, x2, y2,
@@ -287,19 +283,16 @@ with st.sidebar:
 
     st.divider()
     duration = st.slider("Duration (s)", 1.0, 15.0, 5.0, 0.5)
-    # dt slider: format + quantize to avoid duplicate-looking values
     dt = st.slider("Δt (s)", 0.005, 0.1, 0.05, 0.005, format="%.3f")
     dt = float(np.round(dt / 0.005) * 0.005)
 
     st.divider()
     show_upper_path = st.checkbox("Show upper path", value=False)
     show_lower_path = st.checkbox("Show lower path", value=True)
-    # Optional: limit the trail length to keep blitted updates light (0 = full trail)
     trail_len = st.number_input("Trail length (points, 0 = full)", value=250, min_value=0, step=50)
 
     st.divider()
     writer_label = st.radio("Output format", ["GIF (Pillow)", "MP4 (FFmpeg)"], index=0)
-    # GIF loop control (most browsers honor this; 0 = infinite, 1 = play once)
     loop_gif = st.checkbox("Loop GIF in preview", value=True)
     outfile_name = st.text_input("Output filename", value="pendulum.gif" if writer_label.startswith("GIF") else "pendulum.mp4")
 
@@ -315,49 +308,41 @@ with tabs[0]:
     st.subheader("Animation (fixed 50 FPS)")
     run_anim = st.button("Run simulation & render animation")
     if run_anim:
-        # ---- Unified Progress UI ----
-        progress_label = st.empty()
-        progress = st.progress(0)
-
-        # ---- Rough duration estimates (for realistic pacing) ----
-        # Number of simulation points ~ duration/dt
+        # Ocene trajanja za realističen % (konzervativno)
         N_sim = max(1, int(np.ceil(duration / dt)))
         frames_out = int(round(duration * FIXED_FPS))
-
-        # Conservative timing models (tune if desired for your machine)
-        a_sim, b_sim = 2.0e-5, 0.15              # seconds ~ a*N + b
+        a_sim, b_sim = 2.0e-5, 0.15
         est_sim_s = a_sim * N_sim + b_sim
-        c_save, d_save = 1.6e-3, 0.2             # seconds ~ c*frames + d
+        c_save, d_save = 1.6e-3, 0.2
         est_save_s = c_save * frames_out + d_save
 
-        # Percentage allocation per phase (total 100%)
-        P_SIM_START,  P_SIM_END   = 0, 65   # simulate (odeint)
-        P_RES_START,  P_RES_END   = 65, 75  # resample (fast)
-        P_BUILD_START, P_BUILD_END = 75, 85 # build animation (fast)
-        P_SAVE_START,  P_SAVE_END  = 85, 100 # save file
+        # Porazdelitev % po fazah (skupaj 100)
+        P_SIM_START,  P_SIM_END   = 0, 65
+        P_RES_START,  P_RES_END   = 65, 75
+        P_BUILD_START, P_BUILD_END = 75, 85
+        P_SAVE_START,  P_SAVE_END  = 85, 100
 
-        with st.spinner("Simulating and rendering..."):
-            # --- 1) SIMULATE in background (so UI can progress)
+        # Enoten “vrteči se krogec” z dinamičnim labelom (%)
+        with st.status("Simulating & rendering … 0%", expanded=False) as status:
+            # 1) SIMULATE v ozadju in sproti posodabljaj %
             def _simulate():
                 return simulate(theta1, theta2, m1, m2, L1, L2, g, duration, dt)
 
             th_sim, res_sim = run_in_thread(_simulate)
-            drive_progress_while_thread(progress, progress_label, th_sim,
-                                        P_SIM_START, P_SIM_END, est_sim_s)
+            update_status_while_thread(status, th_sim, P_SIM_START, P_SIM_END, est_sim_s)
             if res_sim["error"]:
-                progress_label.error(f"Simulation failed: {res_sim['error']}")
+                status.update(state="error", label=f"Simulation failed: {res_sim['error']}")
                 st.stop()
 
             t, x1, y1, x2, y2 = res_sim["result"]
 
-            # --- 2) RESAMPLE (fast) — animate % over a short, fixed time
-            t_res = 0.2  # seconds to visually move the bar
-            drive_progress(progress, progress_label, P_RES_START, P_RES_END, t_res, "Resampling")
+            # 2) RESAMPLE (hitro) — premakni % v kratkem intervalu
+            update_status_over_time(status, P_RES_START, P_RES_END, 0.2)
             idx = resample_indices(len(t), frames_out)
             x1_s, y1_s, x2_s, y2_s = x1[idx], y1[idx], x2[idx], y2[idx]
 
-            # --- 3) BUILD animation (fast)
-            drive_progress(progress, progress_label, P_BUILD_START, P_BUILD_END, 0.3, "Building animation")
+            # 3) BUILD (hitro)
+            update_status_over_time(status, P_BUILD_START, P_BUILD_END, 0.3)
             fig, ani = build_animation(
                 x1_s, y1_s, x2_s, y2_s,
                 show_upper_path=show_upper_path,
@@ -368,7 +353,7 @@ with tabs[0]:
                 repeat_preview=loop_gif if writer_label.startswith("GIF") else True
             )
 
-            # --- 4) SAVE (GIF/MP4) in background with progress
+            # 4) SAVE (GIF/MP4) v ozadju z živim % v istem krogcu
             use_gif = writer_label.startswith("GIF") or os.path.splitext(outfile_name)[1].lower() == ".gif"
 
             if use_gif:
@@ -383,10 +368,9 @@ with tabs[0]:
                     return gif_path
 
                 th_save, res_save = run_in_thread(_save_gif)
-                drive_progress_while_thread(progress, progress_label, th_save,
-                                            P_SAVE_START, P_SAVE_END, est_save_s)
+                update_status_while_thread(status, th_save, P_SAVE_START, P_SAVE_END, est_save_s)
                 if res_save["error"]:
-                    progress_label.error(f"Saving failed: {res_save['error']}")
+                    status.update(state="error", label=f"Saving failed: {res_save['error']}")
                     st.stop()
 
                 with open(res_save["result"], "rb") as f:
@@ -406,10 +390,9 @@ with tabs[0]:
                     return mp4_path
 
                 th_save, res_save = run_in_thread(_save_mp4)
-                drive_progress_while_thread(progress, progress_label, th_save,
-                                            P_SAVE_START, P_SAVE_END, est_save_s)
+                update_status_while_thread(status, th_save, P_SAVE_START, P_SAVE_END, est_save_s)
                 if res_save["error"]:
-                    progress_label.error(f"Saving failed: {res_save['error']}")
+                    status.update(state="error", label=f"Saving failed: {res_save['error']}")
                     st.stop()
 
                 with open(res_save["result"], "rb") as f:
@@ -419,9 +402,8 @@ with tabs[0]:
                     st.download_button("Download MP4", data=f.read(),
                                        file_name=outfile_name or "pendulum.mp4", mime="video/mp4")
 
-        # Finalize progress
-        progress.progress(100)
-        progress_label.success("Done – 100%")
+            # zaključek indikatorja
+            status.update(state="complete", label="Simulating & rendering … 100%")
 
 with tabs[1]:
     st.subheader("Angle–Time Plot")
@@ -430,13 +412,14 @@ with tabs[1]:
     points = st.slider("Number of points", 200, 5000, 1000, 100)
     run_plot = st.button("Compute & render plot")
     if run_plot:
-        with st.spinner("Computing..."):
-            png_bytes = angle_time_plot(theta1, theta2, z1, z2, m1, m2, L1, L2, g, duration, points)
-            st.image(png_bytes, caption="Angle–Time plot", width=preview_width)
-            st.download_button("Download PNG", data=png_bytes, file_name="angles.png", mime="image/png")
+        # za plot ne spreminjam ničesar
+        png_bytes = angle_time_plot(theta1, theta2, z1, z2, m1, m2, L1, L2, g, duration, points)
+        st.image(png_bytes, caption="Angle–Time plot", width=preview_width)
+        st.download_button("Download PNG", data=png_bytes, file_name="angles.png", mime="image/png")
 
-# Informative tip about GIF frame-delay limits and performance
+# Informativno
 st.caption(
-    "Note: GIF playback in browsers is typically capped by a ~20 ms minimum frame delay (≈ 50 FPS). "
-    "MP4 respects the encoded FPS. Uses blitting for fast rendering."
+    "Note: GIF playback v brskalnikih je običajno omejen z ~20 ms minimalnim delayem (≈ 50 FPS). "
+    "MP4 spoštuje kodiran FPS. Uporabljamo blitting za hitrejše renderiranje."
 )
+``
