@@ -4,11 +4,14 @@
 Streamlit GUI for Interactive Simulation and Visualization of Chaotic Nonlinear Behavior of a Double Pendulum Using Python:
 - Animation (GIF via Pillow; MP4 via FFmpeg), fixed at 50 FPS
 - Angle–time plot
+
 Run: streamlit run app.py
 """
 import os
 import io
 import tempfile
+import time
+import threading
 import numpy as np
 
 import matplotlib
@@ -18,11 +21,7 @@ from matplotlib.animation import FuncAnimation, FFMpegWriter, PillowWriter
 from scipy.integrate import odeint
 import streamlit as st
 
-# -- dodatno za napredek --
-import time
-import threading
-
-FIXED_FPS = 50  # ~20 ms min frame delay pri GIF -> ~50 FPS
+FIXED_FPS = 50  # Common GIF min-frame-delay ~20 ms ⇒ ~50 FPS
 
 # ------------------------------
 # Physics and simulation (cached)
@@ -102,36 +101,43 @@ def run_in_thread(func, *args, **kwargs):
     th.start()
     return th, result
 
-def update_status_over_time(status, start_pct, end_pct, est_seconds):
-    """
-    Posodabljaj st.status() label od start_pct do end_pct v ~est_seconds.
-    """
+def _pace_percent(start_pct: float, end_pct: float, est_seconds: float):
+    """Generator yielding integer percents from start to end over ~est_seconds."""
     start_pct = float(start_pct); end_pct = float(end_pct)
-    width = max(1e-6, est_seconds)
+    width = max(1e-6, float(est_seconds))
     t0 = time.perf_counter()
-    while True:
+    current = start_pct
+    while current < end_pct - 0.5:
         elapsed = time.perf_counter() - t0
         frac = min(1.0, elapsed / width)
-        current = int(start_pct + (end_pct - start_pct) * frac)
-        status.update(label=f"Simulating & rendering … {current}%")
-        if frac >= 1.0:
-            break
+        current = start_pct + (end_pct - start_pct) * frac
+        yield int(current)
         time.sleep(0.1)
+    yield int(end_pct)
 
-def update_status_while_thread(status, thread, start_pct, end_pct, est_seconds):
-    """
-    Posodabljaj st.status() label medtem ko 'thread' teče.
-    """
-    start_pct = float(start_pct); end_pct = float(end_pct)
-    width = max(1e-6, est_seconds)
-    t0 = time.perf_counter()
-    while thread.is_alive():
-        elapsed = time.perf_counter() - t0
-        frac = min(1.0, elapsed / width)
-        current = int(start_pct + (end_pct - start_pct) * frac)
-        status.update(label=f"Simulating & rendering … {current}%")
-        time.sleep(0.1)
-    status.update(label=f"Simulating & rendering … {int(end_pct)}%")
+def drive_status_while_thread(status, thread, start_pct, end_pct, est_seconds):
+    """Update st.status(...) label 0–100% while thread runs."""
+    for p in _pace_percent(start_pct, end_pct, est_seconds):
+        status.update(label=f"Simulating & rendering … {p}%")
+        if not thread.is_alive() and p >= int(end_pct):
+            break
+
+def drive_label_while_thread(label_ph, thread, start_pct, end_pct, est_seconds):
+    """Fallback: update a single label (under st.spinner) with 0–100% while thread runs."""
+    for p in _pace_percent(start_pct, end_pct, est_seconds):
+        label_ph.info(f"Simulating & rendering … {p}%")
+        if not thread.is_alive() and p >= int(end_pct):
+            break
+
+def drive_status_for_interval(status, start_pct, end_pct, seconds):
+    """Move st.status label across a short fixed interval (fast phases)."""
+    for p in _pace_percent(start_pct, end_pct, seconds):
+        status.update(label=f"Simulating & rendering … {p}%")
+
+def drive_label_for_interval(label_ph, start_pct, end_pct, seconds):
+    """Fallback: move single label across a short fixed interval (fast phases)."""
+    for p in _pace_percent(start_pct, end_pct, seconds):
+        label_ph.info(f"Simulating & rendering … {p}%")
 
 # ------------------------------
 # Animation builder (blitting + fixed 50 FPS)
@@ -166,7 +172,7 @@ def build_animation(
     if show_upper_path or show_lower_path:
         ax.legend(loc='upper left', frameon=False)
 
-    # Precompute trail slicing helper
+    # Trail slicing
     def slice_trail(arr, i):
         if trail_len is None or trail_len <= 0:
             return arr[:i+1]
@@ -283,16 +289,19 @@ with st.sidebar:
 
     st.divider()
     duration = st.slider("Duration (s)", 1.0, 15.0, 5.0, 0.5)
+    # dt slider: format + quantize to avoid duplicate-looking values
     dt = st.slider("Δt (s)", 0.005, 0.1, 0.05, 0.005, format="%.3f")
     dt = float(np.round(dt / 0.005) * 0.005)
 
     st.divider()
     show_upper_path = st.checkbox("Show upper path", value=False)
     show_lower_path = st.checkbox("Show lower path", value=True)
+    # Optional: limit the trail length to keep blitted updates light (0 = full trail)
     trail_len = st.number_input("Trail length (points, 0 = full)", value=250, min_value=0, step=50)
 
     st.divider()
     writer_label = st.radio("Output format", ["GIF (Pillow)", "MP4 (FFmpeg)"], index=0)
+    # GIF loop control (most browsers honor this; 0 = infinite, 1 = play once)
     loop_gif = st.checkbox("Loop GIF in preview", value=True)
     outfile_name = st.text_input("Output filename", value="pendulum.gif" if writer_label.startswith("GIF") else "pendulum.mp4")
 
@@ -307,103 +316,191 @@ tabs = st.tabs(["🎞️ Animation", "📈 Angle–Time Plot"])
 with tabs[0]:
     st.subheader("Animation (fixed 50 FPS)")
     run_anim = st.button("Run simulation & render animation")
+
     if run_anim:
-        # Ocene trajanja za realističen % (konzervativno)
+        # --- Conservative estimates to pace % realistically ---
         N_sim = max(1, int(np.ceil(duration / dt)))
         frames_out = int(round(duration * FIXED_FPS))
-        a_sim, b_sim = 2.0e-5, 0.15
+        a_sim, b_sim = 2.0e-5, 0.15             # seconds ~ a*N + b
         est_sim_s = a_sim * N_sim + b_sim
-        c_save, d_save = 1.6e-3, 0.2
+        c_save, d_save = 1.6e-3, 0.2            # seconds ~ c*frames + d
         est_save_s = c_save * frames_out + d_save
 
-        # Porazdelitev % po fazah (skupaj 100)
+        # Phase allocations (sum to 100)
         P_SIM_START,  P_SIM_END   = 0, 65
         P_RES_START,  P_RES_END   = 65, 75
         P_BUILD_START, P_BUILD_END = 75, 85
         P_SAVE_START,  P_SAVE_END  = 85, 100
 
-        # Enoten “vrteči se krogec” z dinamičnim labelom (%)
-        with st.status("Simulating & rendering … 0%", expanded=False) as status:
-            # 1) SIMULATE v ozadju in sproti posodabljaj %
-            def _simulate():
-                return simulate(theta1, theta2, m1, m2, L1, L2, g, duration, dt)
+        # Prefer st.status if available (dynamic spinner with updatable label)
+        use_status = hasattr(st, "status")
 
-            th_sim, res_sim = run_in_thread(_simulate)
-            update_status_while_thread(status, th_sim, P_SIM_START, P_SIM_END, est_sim_s)
-            if res_sim["error"]:
-                status.update(state="error", label=f"Simulation failed: {res_sim['error']}")
-                st.stop()
+        if use_status:
+            with st.status("Simulating & rendering … 0%", expanded=False) as status:
+                # 1) SIMULATE in background (so UI can update %)
+                def _simulate():
+                    return simulate(theta1, theta2, m1, m2, L1, L2, g, duration, dt)
 
-            t, x1, y1, x2, y2 = res_sim["result"]
-
-            # 2) RESAMPLE (hitro) — premakni % v kratkem intervalu
-            update_status_over_time(status, P_RES_START, P_RES_END, 0.2)
-            idx = resample_indices(len(t), frames_out)
-            x1_s, y1_s, x2_s, y2_s = x1[idx], y1[idx], x2[idx], y2[idx]
-
-            # 3) BUILD (hitro)
-            update_status_over_time(status, P_BUILD_START, P_BUILD_END, 0.3)
-            fig, ani = build_animation(
-                x1_s, y1_s, x2_s, y2_s,
-                show_upper_path=show_upper_path,
-                show_lower_path=show_lower_path,
-                title="Double Pendulum",
-                fps=FIXED_FPS,
-                trail_len=None if trail_len == 0 else int(trail_len),
-                repeat_preview=loop_gif if writer_label.startswith("GIF") else True
-            )
-
-            # 4) SAVE (GIF/MP4) v ozadju z živim % v istem krogcu
-            use_gif = writer_label.startswith("GIF") or os.path.splitext(outfile_name)[1].lower() == ".gif"
-
-            if use_gif:
-                with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as f:
-                    gif_path = f.name
-
-                def _save_gif():
-                    loop_meta = 0 if loop_gif else 1  # 0 = loop, 1 = play once
-                    writer = PillowWriter(fps=FIXED_FPS, metadata={'loop': loop_meta})
-                    ani.save(gif_path, writer=writer)
-                    plt.close(fig)
-                    return gif_path
-
-                th_save, res_save = run_in_thread(_save_gif)
-                update_status_while_thread(status, th_save, P_SAVE_START, P_SAVE_END, est_save_s)
-                if res_save["error"]:
-                    status.update(state="error", label=f"Saving failed: {res_save['error']}")
+                th_sim, res_sim = run_in_thread(_simulate)
+                drive_status_while_thread(status, th_sim, P_SIM_START, P_SIM_END, est_sim_s)
+                if res_sim["error"]:
+                    status.update(state="error", label=f"Simulation failed: {res_sim['error']}")
                     st.stop()
 
-                with open(res_save["result"], "rb") as f:
-                    gif_bytes = f.read()
-                st.image(gif_bytes, caption=f"Animation (GIF, {FIXED_FPS} FPS)", width=preview_width)
-                with open(res_save["result"], "rb") as f:
-                    st.download_button("Download GIF", data=f.read(),
-                                       file_name=outfile_name or "pendulum.gif", mime="image/gif")
-            else:
-                with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
-                    mp4_path = f.name
+                t, x1, y1, x2, y2 = res_sim["result"]
 
-                def _save_mp4():
-                    writer = FFMpegWriter(fps=FIXED_FPS)
-                    ani.save(mp4_path, writer=writer)
-                    plt.close(fig)
-                    return mp4_path
+                # 2) RESAMPLE (quick visual tick)
+                drive_status_for_interval(status, P_RES_START, P_RES_END, 0.2)
+                idx = resample_indices(len(t), frames_out)
+                x1_s, y1_s, x2_s, y2_s = x1[idx], y1[idx], x2[idx], y2[idx]
 
-                th_save, res_save = run_in_thread(_save_mp4)
-                update_status_while_thread(status, th_save, P_SAVE_START, P_SAVE_END, est_save_s)
-                if res_save["error"]:
-                    status.update(state="error", label=f"Saving failed: {res_save['error']}")
+                # 3) BUILD animation (quick)
+                drive_status_for_interval(status, P_BUILD_START, P_BUILD_END, 0.3)
+                fig, ani = build_animation(
+                    x1_s, y1_s, x2_s, y2_s,
+                    show_upper_path=show_upper_path,
+                    show_lower_path=show_lower_path,
+                    title="Double Pendulum",
+                    fps=FIXED_FPS,
+                    trail_len=None if trail_len == 0 else int(trail_len),
+                    repeat_preview=loop_gif if writer_label.startswith("GIF") else True
+                )
+
+                # 4) SAVE (GIF/MP4) with live % in the same spinner
+                use_gif = writer_label.startswith("GIF") or os.path.splitext(outfile_name)[1].lower() == ".gif"
+
+                if use_gif:
+                    with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as f:
+                        gif_path = f.name
+
+                    def _save_gif():
+                        loop_meta = 0 if loop_gif else 1  # 0 = loop, 1 = play once
+                        writer = PillowWriter(fps=FIXED_FPS, metadata={'loop': loop_meta})
+                        ani.save(gif_path, writer=writer)
+                        plt.close(fig)
+                        return gif_path
+
+                    th_save, res_save = run_in_thread(_save_gif)
+                    drive_status_while_thread(status, th_save, P_SAVE_START, P_SAVE_END, est_save_s)
+                    if res_save["error"]:
+                        status.update(state="error", label=f"Saving failed: {res_save['error']}")
+                        st.stop()
+
+                    with open(res_save["result"], "rb") as f:
+                        gif_bytes = f.read()
+                    st.image(gif_bytes, caption=f"Animation (GIF, {FIXED_FPS} FPS)", width=preview_width)
+                    with open(res_save["result"], "rb") as f:
+                        st.download_button("Download GIF", data=f.read(),
+                                           file_name=outfile_name or "pendulum.gif", mime="image/gif")
+                else:
+                    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+                        mp4_path = f.name
+
+                    def _save_mp4():
+                        writer = FFMpegWriter(fps=FIXED_FPS)
+                        ani.save(mp4_path, writer=writer)
+                        plt.close(fig)
+                        return mp4_path
+
+                    th_save, res_save = run_in_thread(_save_mp4)
+                    drive_status_while_thread(status, th_save, P_SAVE_START, P_SAVE_END, est_save_s)
+                    if res_save["error"]:
+                        status.update(state="error", label=f"Saving failed: {res_save['error']}")
+                        st.stop()
+
+                    with open(res_save["result"], "rb") as f:
+                        mp4_bytes = f.read()
+                    st.video(mp4_bytes)
+                    with open(res_save["result"], "rb") as f:
+                        st.download_button("Download MP4", data=f.read(),
+                                           file_name=outfile_name or "pendulum.mp4", mime="video/mp4")
+
+                # Finish spinner at 100%
+                status.update(state="complete", label="Simulating & rendering … 100%")
+
+        else:
+            # Fallback for older Streamlit (no st.status):
+            # show a single spinner + one dynamic label (no duplicate indicators)
+            with st.spinner("Simulating & rendering …"):
+                percent_label = st.empty()
+
+                # 1) SIMULATE
+                def _simulate():
+                    return simulate(theta1, theta2, m1, m2, L1, L2, g, duration, dt)
+
+                th_sim, res_sim = run_in_thread(_simulate)
+                drive_label_while_thread(percent_label, th_sim, P_SIM_START, P_SIM_END, est_sim_s)
+                if res_sim["error"]:
+                    percent_label.error(f"Simulation failed: {res_sim['error']}")
                     st.stop()
 
-                with open(res_save["result"], "rb") as f:
-                    mp4_bytes = f.read()
-                st.video(mp4_bytes)
-                with open(res_save["result"], "rb") as f:
-                    st.download_button("Download MP4", data=f.read(),
-                                       file_name=outfile_name or "pendulum.mp4", mime="video/mp4")
+                t, x1, y1, x2, y2 = res_sim["result"]
 
-            # zaključek indikatorja
-            status.update(state="complete", label="Simulating & rendering … 100%")
+                # 2) RESAMPLE
+                drive_label_for_interval(percent_label, P_RES_START, P_RES_END, 0.2)
+                idx = resample_indices(len(t), frames_out)
+                x1_s, y1_s, x2_s, y2_s = x1[idx], y1[idx], x2[idx], y2[idx]
+
+                # 3) BUILD
+                drive_label_for_interval(percent_label, P_BUILD_START, P_BUILD_END, 0.3)
+                fig, ani = build_animation(
+                    x1_s, y1_s, x2_s, y2_s,
+                    show_upper_path=show_upper_path,
+                    show_lower_path=show_lower_path,
+                    title="Double Pendulum",
+                    fps=FIXED_FPS,
+                    trail_len=None if trail_len == 0 else int(trail_len),
+                    repeat_preview=loop_gif if writer_label.startswith("GIF") else True
+                )
+
+                # 4) SAVE
+                use_gif = writer_label.startswith("GIF") or os.path.splitext(outfile_name)[1].lower() == ".gif"
+
+                if use_gif:
+                    with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as f:
+                        gif_path = f.name
+
+                    def _save_gif():
+                        loop_meta = 0 if loop_gif else 1
+                        writer = PillowWriter(fps=FIXED_FPS, metadata={'loop': loop_meta})
+                        ani.save(gif_path, writer=writer)
+                        plt.close(fig)
+                        return gif_path
+
+                    th_save, res_save = run_in_thread(_save_gif)
+                    drive_label_while_thread(percent_label, th_save, P_SAVE_START, P_SAVE_END, est_save_s)
+                    if res_save["error"]:
+                        percent_label.error(f"Saving failed: {res_save['error']}")
+                        st.stop()
+
+                    with open(res_save["result"], "rb") as f:
+                        gif_bytes = f.read()
+                    st.image(gif_bytes, caption=f"Animation (GIF, {FIXED_FPS} FPS)", width=preview_width)
+                    with open(res_save["result"], "rb") as f:
+                        st.download_button("Download GIF", data=f.read(),
+                                           file_name=outfile_name or "pendulum.gif", mime="image/gif")
+                else:
+                    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+                        mp4_path = f.name
+
+                    def _save_mp4():
+                        writer = FFMpegWriter(fps=FIXED_FPS)
+                        ani.save(mp4_path, writer=writer)
+                        plt.close(fig)
+                        return mp4_path
+
+                    th_save, res_save = run_in_thread(_save_mp4)
+                    drive_label_while_thread(percent_label, th_save, P_SAVE_START, P_SAVE_END, est_save_s)
+                    if res_save["error"]:
+                        percent_label.error(f"Saving failed: {res_save['error']}")
+                        st.stop()
+
+                    with open(res_save["result"], "rb") as f:
+                        mp4_bytes = f.read()
+                    st.video(mp4_bytes)
+                    with open(res_save["result"], "rb") as f:
+                        st.download_button("Download MP4", data=f.read(),
+                                           file_name=outfile_name or "pendulum.mp4", mime="video/mp4")
 
 with tabs[1]:
     st.subheader("Angle–Time Plot")
@@ -412,14 +509,12 @@ with tabs[1]:
     points = st.slider("Number of points", 200, 5000, 1000, 100)
     run_plot = st.button("Compute & render plot")
     if run_plot:
-        # za plot ne spreminjam ničesar
         png_bytes = angle_time_plot(theta1, theta2, z1, z2, m1, m2, L1, L2, g, duration, points)
         st.image(png_bytes, caption="Angle–Time plot", width=preview_width)
         st.download_button("Download PNG", data=png_bytes, file_name="angles.png", mime="image/png")
 
-# Informativno
+# Informative tip about GIF frame-delay limits and performance
 st.caption(
-    "Note: GIF playback v brskalnikih je običajno omejen z ~20 ms minimalnim delayem (≈ 50 FPS). "
-    "MP4 spoštuje kodiran FPS. Uporabljamo blitting za hitrejše renderiranje."
+    "Note: GIF playback in browsers is typically capped by a ~20 ms minimum frame delay (≈ 50 FPS). "
+    "MP4 respects the encoded FPS. Uses blitting for fast rendering."
 )
-``
