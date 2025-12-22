@@ -72,7 +72,8 @@ def build_animation(
     t, x1, y1, x2, y2,
     show_upper_path=False, show_lower_path=True,
     title="Double Pendulum",
-    target_fps=None, dt=None
+    target_fps=None, dt=None,
+    duration=None
 ):
     fig, ax = plt.subplots(figsize=(6, 6))
 
@@ -84,16 +85,15 @@ def build_animation(
     trail1_x, trail1_y = [], []
     trail2_x, trail2_y = [], []
 
-    # --- Option A: FPS controls preview timing; precise frame selection aligns duration ≈ Duration ---
-    if target_fps is not None and dt is not None and target_fps > 0 and dt > 0 and len(t) > 0:
-        # Number of simulation samples
+    # Precise frame selection: N_eff = round(Duration * FPS), evenly spread over simulation
+    if (
+        target_fps is not None and target_fps > 0 and
+        dt is not None and dt > 0 and
+        duration is not None and duration > 0 and
+        len(t) > 0
+    ):
         N_sim = len(t)
-        # Target number of effective frames so that N_eff / FPS ≈ Duration
-        # t was built with np.arange(0, duration, dt) -> last sample ≈ duration - dt
-        # Use duration_est = t[-1] + dt to recover intended duration
-        duration_est = (t[-1] + dt) if N_sim > 1 else dt
-        N_eff = max(1, int(round(duration_est * target_fps)))
-        # Evenly-spaced indices across the simulation frames
+        N_eff = max(1, int(round(duration * target_fps)))
         frame_indices = np.linspace(0, N_sim - 1, N_eff).astype(int).tolist()
         interval_ms = 1000.0 / target_fps
     else:
@@ -207,10 +207,10 @@ def angle_time_plot(theta1_deg, theta2_deg, z1, z2, m1, m2, L1, L2, g, duration,
 # ---------------------------------------------------------------
 st.set_page_config(
     page_title="Interactive Simulation and Visualization of Chaotic Nonlinear Behavior of a Double Pendulum Using Python (Streamlit GUI)",
-    page_icon="🧀",
+    page_icon="🚀",
     layout="wide"
 )
-st.title("🧀 Interactive Simulation and Visualization of Chaotic Nonlinear Behavior of a Double Pendulum Using Python")
+st.title("🚀 Interactive Simulation and Visualization of Chaotic Nonlinear Behavior of a Double Pendulum Using Python")
 
 with st.sidebar:
     st.header("Parameters")
@@ -233,8 +233,8 @@ with st.sidebar:
     outfile_name = st.text_input("Output filename", value="pendulum.gif" if writer_label.startswith("GIF") else "pendulum.mp4")
     st.divider()
     # preview_width = st.slider("Preview width (px)", 300, 1000, 600, 50)
-    preview_width = st.slider("Preview width (px)", 600, 1000, 600, 50)  # add 0
-# Clamp to be extra-safe - add 1
+    preview_width = st.slider("Preview width (px)", 600, 1000, 600, 50)  # enforced min 600
+# Clamp to be extra-safe
 preview_width = int(np.clip(preview_width, 600, 1000))
 
 tabs = st.tabs(["🎞️ Animation", "📈 Angle–Time Plot"])
@@ -246,12 +246,12 @@ with tabs[0]:
         with st.spinner("Simulating and rendering..."):
             t, x1, y1, x2, y2 = simulate(theta1, theta2, m1, m2, L1, L2, g, duration, dt)
 
-            # Option A: pass fps & dt so preview timing and export playback are aligned
+            # Pass fps, dt, and duration so preview timing and export playback are aligned
             fig, ani = build_animation(
                 t, x1, y1, x2, y2,
                 show_upper_path, show_lower_path,
                 title="Double Pendulum",
-                target_fps=fps, dt=dt
+                target_fps=fps, dt=dt, duration=duration
             )
 
             ext = os.path.splitext(outfile_name)[1].lower()
@@ -260,7 +260,8 @@ with tabs[0]:
             if use_gif:
                 with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as f:
                     gif_path = f.name
-                writer = PillowWriter(fps=fps)
+                # Play once (no infinite loop in most viewers)
+                writer = PillowWriter(fps=fps, metadata={'loop': 1})
                 ani.save(gif_path, writer=writer)
                 plt.close(fig)
 
