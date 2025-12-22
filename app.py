@@ -58,7 +58,7 @@ def simulate(theta1_deg, theta2_deg, m1, m2, L1, L2, g, duration, dt):
 
         return [dtheta1, domega1, dtheta2, domega2]
 
-    # Number of points governed by duration and dt (physics)
+    # Number of physics samples governed by duration and dt
     t = np.arange(0.0, duration, dt)
     initial_state = [theta1_0, omega1_0, theta2_0, omega2_0]
     sol = odeint(derivs, initial_state, t)
@@ -71,18 +71,17 @@ def simulate(theta1_deg, theta2_deg, m1, m2, L1, L2, g, duration, dt):
 
 
 # ------------------------------
-# Deterministic resampling for exact playback duration
+# Deterministic resampling for exact playback duration (no FPS control in UI)
 # ------------------------------
 def resample_to_fixed_frame_count(x: np.ndarray, frames_out: int) -> np.ndarray:
     """
     Resample a 1D array to exactly frames_out samples by nearest-index selection.
-    This guarantees a fixed output frame count without interpolation artifacts.
+    Guarantees a fixed output frame count without interpolation artifacts.
     """
     n = len(x)
     frames_out = max(1, int(frames_out))
     if n == frames_out:
         return x.copy()
-    # Map uniform positions over [0, n-1] to nearest original indices
     idx = np.linspace(0, n - 1, frames_out)
     idx_round = np.clip(np.round(idx).astype(int), 0, n - 1)
     return x[idx_round]
@@ -99,13 +98,13 @@ def resample_trajectory(t, x1, y1, x2, y2, frames_out):
 
 
 # ------------------------------
-# Animation builder (preview timing from desired fps)
+# Animation builder (preview timing from desired playback rate)
 # ------------------------------
 def build_animation(
     x1, y1, x2, y2,
     show_upper_path=False, show_lower_path=True,
     title="Double Pendulum",
-    preview_fps=30,
+    preview_frames_per_second=30,  # internal, derived automatically
     repeat_preview=True
 ):
     fig, ax = plt.subplots(figsize=(6, 6))
@@ -140,7 +139,8 @@ def build_animation(
         if show_upper_path or show_lower_path:
             ax.legend(loc='upper left', frameon=False)
 
-    interval_ms = 1000.0 / max(1, int(round(preview_fps)))
+    # Preview interval derived from internal fps (ms per frame)
+    interval_ms = 1000.0 / max(1, int(round(preview_frames_per_second)))
     ani = FuncAnimation(fig, update, frames=len(x1), interval=interval_ms, repeat=repeat_preview)
     return fig, ani
 
@@ -201,7 +201,7 @@ def angle_time_plot(theta1_deg, theta2_deg, z1, z2, m1, m2, L1, L2, g, duration,
 
 
 # ------------------------------
-# Streamlit UI
+# Streamlit UI (NO FPS in UI)
 # ------------------------------
 st.set_page_config(
     page_title="Interactive Simulation and Visualization of Chaotic Nonlinear Behavior of a Double Pendulum Using Python (Streamlit GUI)",
@@ -223,10 +223,10 @@ with st.sidebar:
     g = st.slider("Gravity g (m/s²)", 1.0, 20.0, 9.81, 0.01)
 
     st.divider()
-    duration = st.slider("Duration (s)", 1.0, 30.0, 5.0, 0.5)
+    duration = st.slider("Duration (s)", 1.0, 30.0, 5.0, 0.5)  # This is the ONLY timing control
     dt = st.slider("Δt (s)", 0.005, 0.1, 0.05, 0.005)
 
-    # Playback speed control: Slower / Real / Faster
+    # Playback speed control only: Slower / Real / Faster (no FPS)
     speed_label = st.select_slider(
         "Playback speed",
         options=["Slower", "Real", "Faster"],
@@ -234,11 +234,6 @@ with st.sidebar:
         help="Playback relative to real time. 'Real' lasts exactly Duration seconds."
     )
     speed_factor = {"Slower": 0.5, "Real": 1.0, "Faster": 2.0}[speed_label]
-
-    # Base output fps (decoupled from dt) -> guarantees exact duration
-    base_fps = st.slider("Base output FPS (advanced)", 10, 60, 30, 5,
-                         help="Used to construct an exact frame count = Duration × base_fps. "
-                              "Preview & file timing are derived from this to guarantee exact Duration at 'Real'.")
 
     st.divider()
     show_upper_path = st.checkbox("Show upper path", value=False)
@@ -268,31 +263,35 @@ with tabs[0]:
             # --- Simulate physics at dt
             t, x1, y1, x2, y2 = simulate(theta1, theta2, m1, m2, L1, L2, g, duration, dt)
 
-            # --- Construct exact output frame count independent of dt
-            frames_out = max(1, int(round(duration * base_fps)))
+            # --- Internally derive the base playback rate from the simulation:
+            # base_rate = samples per second; ensures 'Real' lasts exactly duration
+            # We keep this internal; no FPS control is shown.
+            base_rate = max(1, int(round(len(t) / duration)))
+
+            # Desired playback rate with speed factor (Slower/Real/Faster)
+            playback_rate = max(1, int(round(base_rate * speed_factor)))
+
+            # Exact output frame count independent of dt:
+            frames_out = max(1, int(round(duration * base_rate)))
             t_s, x1_s, y1_s, x2_s, y2_s = resample_trajectory(t, x1, y1, x2, y2, frames_out)
 
-            # --- Timing: Real lasts exactly Duration; Slower/Faster scale by factor
-            preview_fps = max(1, int(round(base_fps * speed_factor)))
-            writer_fps = preview_fps  # keep identical for export timing
-
-            # --- Build preview (repeat=True so it loops)
+            # For preview, use playback_rate → interval_ms = 1000 / playback_rate
             fig, ani = build_animation(
                 x1_s, y1_s, x2_s, y2_s,
                 show_upper_path, show_lower_path,
                 title="Double Pendulum",
-                preview_fps=preview_fps,
+                preview_frames_per_second=playback_rate,
                 repeat_preview=True
             )
 
-            # --- Save/export
+            # --- Save/export: writer rate equals playback_rate
             ext = os.path.splitext(outfile_name)[1].lower()
             use_gif = writer_label.startswith("GIF") or ext == ".gif"
 
             if use_gif:
                 with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as f:
                     gif_path = f.name
-                writer = PillowWriter(fps=writer_fps)
+                writer = PillowWriter(fps=playback_rate)
                 ani.save(gif_path, writer=writer)
                 plt.close(fig)
                 st.image(gif_path, caption="Animation (GIF)", width=preview_width)
@@ -306,7 +305,7 @@ with tabs[0]:
             else:
                 with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
                     mp4_path = f.name
-                writer = FFMpegWriter(fps=writer_fps)
+                writer = FFMpegWriter(fps=playback_rate)
                 ani.save(mp4_path, writer=writer)
                 plt.close(fig)
                 st.video(mp4_path)
