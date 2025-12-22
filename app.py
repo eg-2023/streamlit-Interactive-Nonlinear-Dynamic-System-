@@ -84,15 +84,21 @@ def build_animation(
     trail1_x, trail1_y = [], []
     trail2_x, trail2_y = [], []
 
-    # --- Option A: FPS controls preview timing; frame skip aligns duration ≈ Duration ---
-    if target_fps is not None and dt is not None and target_fps > 0 and dt > 0:
-        sim_fps = 1.0 / dt
-        step = max(1, int(round(sim_fps / target_fps)))
-        frame_indices = list(range(0, len(t), step))
+    # --- Option A: FPS controls preview timing; precise frame selection aligns duration ≈ Duration ---
+    if target_fps is not None and dt is not None and target_fps > 0 and dt > 0 and len(t) > 0:
+        # Number of simulation samples
+        N_sim = len(t)
+        # Target number of effective frames so that N_eff / FPS ≈ Duration
+        # t was built with np.arange(0, duration, dt) -> last sample ≈ duration - dt
+        # Use duration_est = t[-1] + dt to recover intended duration
+        duration_est = (t[-1] + dt) if N_sim > 1 else dt
+        N_eff = max(1, int(round(duration_est * target_fps)))
+        # Evenly-spaced indices across the simulation frames
+        frame_indices = np.linspace(0, N_sim - 1, N_eff).astype(int).tolist()
         interval_ms = 1000.0 / target_fps
     else:
         frame_indices = list(range(len(t)))
-        interval_ms = (t[1] - t[0]) * 1000.0
+        interval_ms = (t[1] - t[0]) * 1000.0 if len(t) > 1 else 1000.0
 
     def update(frame):
         sim_frame = frame_indices[frame]
