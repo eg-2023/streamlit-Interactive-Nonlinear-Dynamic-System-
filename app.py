@@ -6,6 +6,7 @@ Streamlit GUI for Interactive Simulation and Visualization of Chaotic Nonlinear 
 - Angle–time plot (Appendix A style)
 Run: streamlit run app.py
 """
+
 import os
 import io
 import tempfile
@@ -17,9 +18,10 @@ from matplotlib.animation import FuncAnimation, FFMpegWriter, PillowWriter
 from scipy.integrate import odeint
 import streamlit as st
 
-# ---------------------------------------------------------------
+
+# ---------------------------------------
 # Physics and simulation (cached)
-# ---------------------------------------------------------------
+# ---------------------------------------
 @st.cache_data(show_spinner=False)
 def simulate(theta1_deg, theta2_deg, m1, m2, L1, L2, g, duration, dt):
     theta1_0 = np.radians(theta1_deg)
@@ -30,6 +32,7 @@ def simulate(theta1_deg, theta2_deg, m1, m2, L1, L2, g, duration, dt):
     def derivs(state, t):
         theta1, omega1, theta2, omega2 = state
         delta = theta1 - theta2
+
         denom1 = (m1 + m2) * L1 - m2 * L1 * np.cos(delta) ** 2
         denom2 = (L2 / L1) * denom1
 
@@ -38,18 +41,15 @@ def simulate(theta1_deg, theta2_deg, m1, m2, L1, L2, g, duration, dt):
 
         domega1 = (
             m2 * g * np.sin(theta2) * np.cos(delta)
-            - m2 * np.sin(delta) * (L1 * omega1**2 * np.cos(delta) + L2 * omega2**2)
+            - m2 * np.sin(delta) * (L1 * omega1 ** 2 * np.cos(delta) + L2 * omega2 ** 2)
             - (m1 + m2) * g * np.sin(theta1)
         ) / denom1
 
         domega2 = (
-            (m1 + m2)
-            * (
-                L1 * omega1**2 * np.sin(delta)
-                - g * np.sin(theta2)
-                + g * np.sin(theta1) * np.cos(delta)
-            )
-            + m2 * L2 * omega2**2 * np.sin(delta) * np.cos(delta)
+            (m1 + m2) * (L1 * omega1 ** 2 * np.sin(delta)
+                         - g * np.sin(theta2)
+                         + g * np.sin(theta1) * np.cos(delta))
+            + m2 * L2 * omega2 ** 2 * np.sin(delta) * np.cos(delta)
         ) / denom2
 
         return [dtheta1, domega1, dtheta2, domega2]
@@ -65,16 +65,13 @@ def simulate(theta1_deg, theta2_deg, m1, m2, L1, L2, g, duration, dt):
 
     return t, x1, y1, x2, y2
 
-# ---------------------------------------------------------------
+
+# ---------------------------------------
 # Animation builder
-# ---------------------------------------------------------------
-def build_animation(
-    t, x1, y1, x2, y2,
-    show_upper_path=False, show_lower_path=True,
-    title="Double Pendulum",
-    target_fps=None, dt=None,
-    duration=None
-):
+# ---------------------------------------
+def build_animation(t, x1, y1, x2, y2,
+                    show_upper_path=False, show_lower_path=True,
+                    title="Double Pendulum"):
     fig, ax = plt.subplots(figsize=(6, 6))
 
     max_extent = max(np.max(np.abs(x2)), np.max(np.abs(y2)), 1.0)
@@ -85,23 +82,7 @@ def build_animation(
     trail1_x, trail1_y = [], []
     trail2_x, trail2_y = [], []
 
-    # Precise frame selection: N_eff = round(Duration * FPS), evenly spread over simulation
-    if (
-        target_fps is not None and target_fps > 0 and
-        dt is not None and dt > 0 and
-        duration is not None and duration > 0 and
-        len(t) > 0
-    ):
-        N_sim = len(t)
-        N_eff = max(1, int(round(duration * target_fps)))
-        frame_indices = np.linspace(0, N_sim - 1, N_eff).astype(int).tolist()
-        interval_ms = 1000.0 / target_fps
-    else:
-        frame_indices = list(range(len(t)))
-        interval_ms = (t[1] - t[0]) * 1000.0 if len(t) > 1 else 1000.0
-
     def update(frame):
-        sim_frame = frame_indices[frame]
         ax.clear()
         ax.set_xlim(x_min, x_max)
         ax.set_ylim(y_min, y_max)
@@ -109,8 +90,9 @@ def build_animation(
         ax.grid(True, alpha=0.25)
 
         if show_upper_path:
-            trail1_x.append(x1[sim_frame])
-            trail1_y.append(y1[sim_frame])
+            trail1_x.append(x1[frame])
+            trail1_y.append(y1[frame])
+            #ax.plot(trail1_x, trail1_y, 'b--', linewidth=1, label='Upper path')
             ax.plot(
                 trail1_x,
                 trail1_y,
@@ -119,10 +101,10 @@ def build_animation(
                 color='#1f77b4',
                 label='Upper path'
             )
-
         if show_lower_path:
-            trail2_x.append(x2[sim_frame])
-            trail2_y.append(y2[sim_frame])
+            trail2_x.append(x2[frame])
+            trail2_y.append(y2[frame])
+            #ax.plot(trail2_x, trail2_y, 'r-', linewidth=1, label='Lower path')
             ax.plot(
                 trail2_x,
                 trail2_y,
@@ -132,24 +114,20 @@ def build_animation(
                 label='Lower path'
             )
 
-        ax.plot([0, x1[sim_frame]], [0, y1[sim_frame]], 'o-', lw=2, color='#1f77b4')
-        ax.plot([x1[sim_frame], x2[sim_frame]], [y1[sim_frame], y2[sim_frame]], 'o-', lw=2, color='#ff7f0e')
-
+        ax.plot([0, x1[frame]], [0, y1[frame]], 'o-', lw=2, color='#1f77b4')
+        ax.plot([x1[frame], x2[frame]], [y1[frame], y2[frame]], 'o-', lw=2, color='#ff7f0e')
         ax.set_title(title)
+
         if show_upper_path or show_lower_path:
             ax.legend(loc='upper left', frameon=False)
 
-    ani = FuncAnimation(
-        fig, update,
-        frames=len(frame_indices),
-        interval=interval_ms,
-        repeat=False
-    )
+    ani = FuncAnimation(fig, update, frames=len(t), interval=(t[1] - t[0]) * 1000, repeat=False)
     return fig, ani
 
-# ---------------------------------------------------------------
+
+# ---------------------------------------
 # Angle–time plot
-# ---------------------------------------------------------------
+# ---------------------------------------
 def angle_time_plot(theta1_deg, theta2_deg, z1, z2, m1, m2, L1, L2, g, duration, points):
     theta1_0 = np.radians(theta1_deg)
     theta2_0 = np.radians(theta2_deg)
@@ -165,16 +143,16 @@ def angle_time_plot(theta1_deg, theta2_deg, z1, z2, m1, m2, L1, L2, g, duration,
         dtheta2_dt = z2_
 
         dz1_dt = (
-            - m2 * L1 * z1_**2 * np.sin(delta) * np.cos(delta)
+            - m2 * L1 * z1_ ** 2 * np.sin(delta) * np.cos(delta)
             + m2 * g * np.sin(theta2) * np.cos(delta)
-            - m2 * L2 * z2_**2 * np.sin(delta)
+            - m2 * L2 * z2_ ** 2 * np.sin(delta)
             - (m1 + m2) * g * np.sin(theta1)
         ) / denominator1
 
         dz2_dt = (
-            m2 * L2 * z2_**2 * np.sin(delta) * np.cos(delta)
+            m2 * L2 * z2_ ** 2 * np.sin(delta) * np.cos(delta)
             + (m1 + m2) * g * np.sin(theta1) * np.cos(delta)
-            + (m1 + m2) * L1 * z1_**2 * np.sin(delta)
+            + (m1 + m2) * L1 * z1_ ** 2 * np.sin(delta)
             - (m1 + m2) * g * np.sin(theta2)
         ) / denominator2
 
@@ -202,39 +180,47 @@ def angle_time_plot(theta1_deg, theta2_deg, z1, z2, m1, m2, L1, L2, g, duration,
     buf.seek(0)
     return buf.getvalue()
 
-# ---------------------------------------------------------------
+
+# ---------------------------------------
 # Streamlit UI
-# ---------------------------------------------------------------
-st.set_page_config(
-    page_title="Interactive Simulation and Visualization of Chaotic Nonlinear Behavior of a Double Pendulum Using Python (Streamlit GUI)",
-    page_icon="🚀",
-    layout="wide"
-)
-st.title("🚀 Interactive Simulation and Visualization of Chaotic Nonlinear Behavior of a Double Pendulum Using Python")
+# ---------------------------------------
+st.set_page_config(page_title="Interactive Simulation and Visualization of Chaotic Nonlinear Behavior of a Double Pendulum Using Python (Streamlit GUI)", page_icon="🪀", layout="wide")
+
+st.title("🪀 Interactive Simulation and Visualization of Chaotic Nonlinear Behavior of a Double Pendulum Using Python")
 
 with st.sidebar:
     st.header("Parameters")
+
     theta1 = st.slider("Theta1 (°)", -180.0, 180.0, 60.0, 1.0)
     theta2 = st.slider("Theta2 (°)", -180.0, 180.0, -30.0, 1.0)
+
     m1 = st.slider("Mass m1", 0.1, 50.0, 2.0, 0.1)
     m2 = st.slider("Mass m2", 0.1, 50.0, 20.0, 0.1)
+
     L1 = st.slider("Length L1", 0.1, 5.0, 1.0, 0.1)
     L2 = st.slider("Length L2", 0.1, 5.0, 1.0, 0.1)
+
     g = st.slider("Gravity g (m/s²)", 1.0, 20.0, 9.81, 0.01)
+
     st.divider()
     duration = st.slider("Duration (s)", 1.0, 30.0, 5.0, 0.5)
     dt = st.slider("Δt (s)", 0.005, 0.1, 0.05, 0.005)
     fps = st.slider("FPS", 5, 60, 15, 1)
+
     st.divider()
     show_upper_path = st.checkbox("Show upper path", value=False)
     show_lower_path = st.checkbox("Show lower path", value=True)
+
     st.divider()
     writer_label = st.radio("Output format", ["GIF (Pillow)", "MP4 (FFmpeg)"], index=0)
     outfile_name = st.text_input("Output filename", value="pendulum.gif" if writer_label.startswith("GIF") else "pendulum.mp4")
+
     st.divider()
-    # preview_width = st.slider("Preview width (px)", 300, 1000, 600, 50)
-    preview_width = st.slider("Preview width (px)", 600, 1000, 600, 50)  # enforced min 600
-# Clamp to be extra-safe
+    #preview_width = st.slider("Preview width (px)", 300, 1000, 600, 50)
+    preview_width = st.slider("Preview width (px)", 600, 1000, 600, 50)  #add 0
+
+
+# Clamp to be extra-safe - add 1
 preview_width = int(np.clip(preview_width, 600, 1000))
 
 tabs = st.tabs(["🎞️ Animation", "📈 Angle–Time Plot"])
@@ -242,17 +228,11 @@ tabs = st.tabs(["🎞️ Animation", "📈 Angle–Time Plot"])
 with tabs[0]:
     st.subheader("Animation")
     run_anim = st.button("Run simulation & render animation")
+
     if run_anim:
         with st.spinner("Simulating and rendering..."):
             t, x1, y1, x2, y2 = simulate(theta1, theta2, m1, m2, L1, L2, g, duration, dt)
-
-            # Pass fps, dt, and duration so preview timing and export playback are aligned
-            fig, ani = build_animation(
-                t, x1, y1, x2, y2,
-                show_upper_path, show_lower_path,
-                title="Double Pendulum",
-                target_fps=fps, dt=dt, duration=duration
-            )
+            fig, ani = build_animation(t, x1, y1, x2, y2, show_upper_path, show_lower_path)
 
             ext = os.path.splitext(outfile_name)[1].lower()
             use_gif = writer_label.startswith("GIF") or ext == ".gif"
@@ -260,8 +240,7 @@ with tabs[0]:
             if use_gif:
                 with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as f:
                     gif_path = f.name
-                # Play once (no infinite loop in most viewers)
-                writer = PillowWriter(fps=fps, metadata={'loop': 1})
+                writer = PillowWriter(fps=fps)
                 ani.save(gif_path, writer=writer)
                 plt.close(fig)
 
@@ -284,11 +263,20 @@ with tabs[1]:
     z1 = st.number_input("Initial angular velocity z1 (rad/s)", value=0.0, step=0.1)
     z2 = st.number_input("Initial angular velocity z2 (rad/s)", value=0.0, step=0.1)
     points = st.slider("Number of points", 200, 5000, 1000, 100)
+
     run_plot = st.button("Compute & render plot")
+
     if run_plot:
         with st.spinner("Computing..."):
             png_bytes = angle_time_plot(theta1, theta2, z1, z2, m1, m2, L1, L2, g, duration, points)
-            st.image(png_bytes, caption="Angle–Time plot", width=preview_width)
-            st.download_button("Download PNG", data=png_bytes, file_name="angles.png", mime="image/png")
+        st.image(png_bytes, caption="Angle–Time plot", width=preview_width)
+        st.download_button("Download PNG", data=png_bytes, file_name="angles.png", mime="image/png")
 
 st.caption("Tip: GIF works without FFmpeg. For MP4, install FFmpeg and choose MP4 in the sidebar.")
+
+
+
+
+
+
+
