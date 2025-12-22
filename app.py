@@ -3,7 +3,7 @@
 """
 Streamlit GUI for Interactive Simulation and Visualization of Chaotic Nonlinear Behavior of a Double Pendulum Using Python:
 - Animation (GIF via Pillow; MP4 via FFmpeg)
-- Angle–time plot (Appendix A style)
+- Angle–time plot
 
 Run: streamlit run app.py
 """
@@ -25,7 +25,7 @@ import streamlit as st
 # ------------------------------
 @st.cache_data(show_spinner=False)
 def simulate(theta1_deg, theta2_deg, m1, m2, L1, L2, g, duration, dt):
-    """Integrate double-pendulum equations and return time + coordinates."""
+    """Integrate double-pendulum equations and return time + coordinates sampled at dt."""
     theta1_0 = np.radians(theta1_deg)
     theta2_0 = np.radians(theta2_deg)
     omega1_0 = 0.0
@@ -58,7 +58,7 @@ def simulate(theta1_deg, theta2_deg, m1, m2, L1, L2, g, duration, dt):
 
         return [dtheta1, domega1, dtheta2, domega2]
 
-    # Number of points is governed by duration and dt
+    # Number of points governed by duration and dt (physics)
     t = np.arange(0.0, duration, dt)
     initial_state = [theta1_0, omega1_0, theta2_0, omega2_0]
     sol = odeint(derivs, initial_state, t)
@@ -71,19 +71,38 @@ def simulate(theta1_deg, theta2_deg, m1, m2, L1, L2, g, duration, dt):
 
 
 # ------------------------------
-# Utility: optional frame downsampling
+# Deterministic resampling for exact playback duration
 # ------------------------------
-def downsample_series(t, x1, y1, x2, y2, stride):
-    """Return series sliced by the given positive integer stride."""
-    stride = max(1, int(stride))
-    return t[::stride], x1[::stride], y1[::stride], x2[::stride], y2[::stride]
+def resample_to_fixed_frame_count(x: np.ndarray, frames_out: int) -> np.ndarray:
+    """
+    Resample a 1D array to exactly frames_out samples by nearest-index selection.
+    This guarantees a fixed output frame count without interpolation artifacts.
+    """
+    n = len(x)
+    frames_out = max(1, int(frames_out))
+    if n == frames_out:
+        return x.copy()
+    # Map uniform positions over [0, n-1] to nearest original indices
+    idx = np.linspace(0, n - 1, frames_out)
+    idx_round = np.clip(np.round(idx).astype(int), 0, n - 1)
+    return x[idx_round]
+
+
+def resample_trajectory(t, x1, y1, x2, y2, frames_out):
+    """Resample all series to exactly frames_out samples."""
+    t_out = resample_to_fixed_frame_count(t, frames_out)
+    x1_out = resample_to_fixed_frame_count(x1, frames_out)
+    y1_out = resample_to_fixed_frame_count(y1, frames_out)
+    x2_out = resample_to_fixed_frame_count(x2, frames_out)
+    y2_out = resample_to_fixed_frame_count(y2, frames_out)
+    return t_out, x1_out, y1_out, x2_out, y2_out
 
 
 # ------------------------------
-# Animation builder
+# Animation builder (preview timing from desired fps)
 # ------------------------------
 def build_animation(
-    t, x1, y1, x2, y2,
+    x1, y1, x2, y2,
     show_upper_path=False, show_lower_path=True,
     title="Double Pendulum",
     preview_fps=30,
@@ -121,9 +140,8 @@ def build_animation(
         if show_upper_path or show_lower_path:
             ax.legend(loc='upper left', frameon=False)
 
-    # Preview interval derived from desired preview fps (ms per frame)
     interval_ms = 1000.0 / max(1, int(round(preview_fps)))
-    ani = FuncAnimation(fig, update, frames=len(t), interval=interval_ms, repeat=repeat_preview)
+    ani = FuncAnimation(fig, update, frames=len(x1), interval=interval_ms, repeat=repeat_preview)
     return fig, ani
 
 
@@ -213,9 +231,14 @@ with st.sidebar:
         "Playback speed",
         options=["Slower", "Real", "Faster"],
         value="Real",
-        help="Controls playback relative to real time; simulation density still comes from Δt."
+        help="Playback relative to real time. 'Real' lasts exactly Duration seconds."
     )
     speed_factor = {"Slower": 0.5, "Real": 1.0, "Faster": 2.0}[speed_label]
+
+    # Base output fps (decoupled from dt) -> guarantees exact duration
+    base_fps = st.slider("Base output FPS (advanced)", 10, 60, 30, 5,
+                         help="Used to construct an exact frame count = Duration × base_fps. "
+                              "Preview & file timing are derived from this to guarantee exact Duration at 'Real'.")
 
     st.divider()
     show_upper_path = st.checkbox("Show upper path", value=False)
@@ -231,7 +254,7 @@ with st.sidebar:
     st.divider()
     preview_width = st.slider("Preview width (px)", 600, 1000, 600, 50)
 
-# Clamp preview width to be extra‑safe
+# Clamp preview width
 preview_width = int(np.clip(preview_width, 600, 1000))
 
 tabs = st.tabs(["🎞️ Animation", "📈 Angle–Time Plot"])
@@ -242,31 +265,20 @@ with tabs[0]:
 
     if run_anim:
         with st.spinner("Simulating and rendering..."):
-            # --- Simulate
+            # --- Simulate physics at dt
             t, x1, y1, x2, y2 = simulate(theta1, theta2, m1, m2, L1, L2, g, duration, dt)
 
-            # --- Derive timing from simulation so "Real" lasts exactly `duration`
-            # Base fps from simulation samples (N/duration)
-            base_fps = max(1, int(round(len(t) / duration)))
+            # --- Construct exact output frame count independent of dt
+            frames_out = max(1, int(round(duration * base_fps)))
+            t_s, x1_s, y1_s, x2_s, y2_s = resample_trajectory(t, x1, y1, x2, y2, frames_out)
 
-            # Apply speed factor (Slower/Real/Faster)
-            target_fps = base_fps * speed_factor
+            # --- Timing: Real lasts exactly Duration; Slower/Faster scale by factor
+            preview_fps = max(1, int(round(base_fps * speed_factor)))
+            writer_fps = preview_fps  # keep identical for export timing
 
-            # Optional: cap preview fps and downsample frames to keep things smooth
-            max_preview_fps = 60  # UI smoothness cap
-            stride = max(1, int(np.ceil(target_fps / max_preview_fps)))
-
-            # Downsample series if needed (affects both preview and export)
-            t_s, x1_s, y1_s, x2_s, y2_s = downsample_series(t, x1, y1, x2, y2, stride)
-
-            # Recompute base fps after downsampling to preserve correct timing
-            base_fps_s = max(1, int(round(len(t_s) / duration)))
-            preview_fps = min(int(round(base_fps_s * speed_factor)), max_preview_fps)
-            writer_fps = max(1, int(round(base_fps_s * speed_factor)))
-
-            # --- Build preview (repeat=True so it loops in the UI)
+            # --- Build preview (repeat=True so it loops)
             fig, ani = build_animation(
-                t_s, x1_s, y1_s, x2_s, y2_s,
+                x1_s, y1_s, x2_s, y2_s,
                 show_upper_path, show_lower_path,
                 title="Double Pendulum",
                 preview_fps=preview_fps,
