@@ -10,6 +10,7 @@ import os
 import io
 import tempfile
 import numpy as np
+
 import matplotlib
 matplotlib.use("Agg")  # Headless backend for Streamlit
 import matplotlib.pyplot as plt
@@ -17,11 +18,15 @@ from matplotlib.animation import FuncAnimation, FFMpegWriter, PillowWriter
 from scipy.integrate import odeint
 import streamlit as st
 
+# >>> Added only for progress handling <<<
+import time
+import threading
+
 FIXED_FPS = 50  # match typical browser GIF min-frame-delay (~20 ms) → ~50 FPS
 
-# ---------------------------------------------------------------
+# ------------------------------
 # Physics and simulation (cached)
-# ---------------------------------------------------------------
+# ------------------------------
 @st.cache_data(show_spinner=False)
 def simulate(theta1_deg, theta2_deg, m1, m2, L1, L2, g, duration, dt):
     """Integrate double-pendulum equations and return time + coordinates sampled at dt."""
@@ -66,12 +71,11 @@ def simulate(theta1_deg, theta2_deg, m1, m2, L1, L2, g, duration, dt):
     y1 = -L1 * np.cos(sol[:, 0])
     x2 = x1 + L2 * np.sin(sol[:, 2])
     y2 = y1 - L2 * np.cos(sol[:, 2])
-
     return t, x1, y1, x2, y2
 
-# ---------------------------------------------------------------
+# ------------------------------
 # Deterministic resampling to exact frame count
-# ---------------------------------------------------------------
+# ------------------------------
 def resample_indices(n_in: int, frames_out: int) -> np.ndarray:
     """Return integer indices (len = frames_out) evenly spanning [0, n_in-1]."""
     frames_out = max(1, int(frames_out))
@@ -80,20 +84,57 @@ def resample_indices(n_in: int, frames_out: int) -> np.ndarray:
     idx = np.linspace(0, n_in - 1, frames_out)
     return np.clip(idx.round().astype(int), 0, n_in - 1)
 
-# ---------------------------------------------------------------
+# ------------------------------
+# >>> Progress helpers (added) <<<
+# ------------------------------
+def run_in_thread(func, *args, **kwargs):
+    """
+    Run a callable in a background thread and return (thread, result_holder).
+    result_holder is a dict to capture 'result' and 'error'.
+    """
+    result = {"result": None, "error": None}
+    def target():
+        try:
+            result["result"] = func(*args, **kwargs)
+        except Exception as e:
+            result["error"] = e
+    th = threading.Thread(target=target, daemon=True)
+    th.start()
+    return th, result
+
+def drive_progress_while_thread(progress, label_ph, thread, start_pct, end_pct, est_seconds, phase_label):
+    """
+    Animate progress from start_pct to end_pct while 'thread' is alive,
+    based on elapsed time vs. est_seconds. Updates roughly every 0.1 s.
+    """
+    start_pct = float(start_pct); end_pct = float(end_pct)
+    width = max(1e-6, est_seconds)
+    t0 = time.perf_counter()
+    current = start_pct
+    while thread.is_alive():
+        elapsed = time.perf_counter() - t0
+        frac = min(1.0, elapsed / width)
+        current = start_pct + (end_pct - start_pct) * frac
+        progress.progress(int(current))
+        label_ph.info(f"{phase_label} … {int(current)}%")
+        time.sleep(0.1)
+    # Ensure we end at end_pct
+    progress.progress(int(end_pct))
+    label_ph.info(f"{phase_label} … {int(end_pct)}%")
+
+# ------------------------------
 # Animation builder (blitting + exact duration via fixed 50 FPS)
-# ---------------------------------------------------------------
+# ------------------------------
 def build_animation(
     x1, y1, x2, y2,
     show_upper_path=False, show_lower_path=True,
     title="Double Pendulum",
     fps=FIXED_FPS,
-    trail_len=None,       # None → full trail; else show last N points
+    trail_len=None,  # None → full trail; else show last N points
     repeat_preview=True
 ):
     """Create a blitted animation. Inputs are already resampled to desired frame count."""
     fig, ax = plt.subplots(figsize=(6, 6))
-
     # Limits
     max_extent = max(np.max(np.abs(x2)), np.max(np.abs(y2)), 1.2)
     ax.set_xlim(-max_extent, max_extent)
@@ -105,7 +146,6 @@ def build_animation(
     # Artists: rods and trails
     rod1, = ax.plot([], [], 'o-', lw=2, color='#1f77b4', zorder=3)  # origin -> (x1,y1)
     rod2, = ax.plot([], [], 'o-', lw=2, color='#ff7f0e', zorder=3)  # (x1,y1) -> (x2,y2)
-
     trail_upper = None
     trail_lower = None
     if show_upper_path:
@@ -138,13 +178,11 @@ def build_animation(
         # Rods
         rod1.set_data([0.0, x1[i]], [0.0, y1[i]])
         rod2.set_data([x1[i], x2[i]], [y1[i], y2[i]])
-
         # Trails
         if trail_upper is not None:
             trail_upper.set_data(slice_trail(x1, i), slice_trail(y1, i))
         if trail_lower is not None:
             trail_lower.set_data(slice_trail(x2, i), slice_trail(y2, i))
-
         artists = [rod1, rod2]
         if trail_upper is not None: artists.append(trail_upper)
         if trail_lower is not None: artists.append(trail_lower)
@@ -158,9 +196,9 @@ def build_animation(
     )
     return fig, ani
 
-# ---------------------------------------------------------------
+# ------------------------------
 # Angle–time plot
-# ---------------------------------------------------------------
+# ------------------------------
 def angle_time_plot(theta1_deg, theta2_deg, z1, z2, m1, m2, L1, L2, g, duration, points):
     theta1_0 = np.radians(theta1_deg)
     theta2_0 = np.radians(theta2_deg)
@@ -193,7 +231,6 @@ def angle_time_plot(theta1_deg, theta2_deg, z1, z2, m1, m2, L1, L2, g, duration,
 
     time = np.linspace(0.0, duration, points)
     sol = odeint(equations, state0, time)
-
     theta1 = (sol[:, 0] + np.pi) % (2 * np.pi) - np.pi
     theta2 = (sol[:, 2] + np.pi) % (2 * np.pi) - np.pi
 
@@ -213,9 +250,9 @@ def angle_time_plot(theta1_deg, theta2_deg, z1, z2, m1, m2, L1, L2, g, duration,
     buf.seek(0)
     return buf.getvalue()
 
-# ---------------------------------------------------------------
+# ------------------------------
 # Streamlit UI
-# ---------------------------------------------------------------
+# ------------------------------
 st.set_page_config(
     page_title="Interactive Simulation and Visualization of Chaotic Nonlinear Behavior of a Double Pendulum Using Python (Streamlit GUI)",
     page_icon="🚀",
@@ -235,7 +272,6 @@ with st.sidebar:
 
     st.divider()
     duration = st.slider("Duration (s)", 1.0, 15.0, 5.0, 0.5)
-
     # dt slider: format + quantize to avoid duplicate-looking values
     dt = st.slider("Δt (s)", 0.005, 0.1, 0.05, 0.005, format="%.3f")
     dt = float(np.round(dt / 0.005) * 0.005)
@@ -243,7 +279,6 @@ with st.sidebar:
     st.divider()
     show_upper_path = st.checkbox("Show upper path", value=False)
     show_lower_path = st.checkbox("Show lower path", value=True)
-
     # Optional: limit the trail length to keep blitted updates light (0 = full trail)
     trail_len = st.number_input("Trail length (points, 0 = full)", value=250, min_value=0, step=50)
 
@@ -251,7 +286,6 @@ with st.sidebar:
     writer_label = st.radio("Output format", ["GIF (Pillow)", "MP4 (FFmpeg)"], index=0)
     # GIF loop control (most browsers honor this; 0 = infinite, 1 = play once)
     loop_gif = st.checkbox("Loop GIF in preview", value=True)
-
     outfile_name = st.text_input("Output filename", value="pendulum.gif" if writer_label.startswith("GIF") else "pendulum.mp4")
 
     st.divider()
@@ -266,16 +300,53 @@ with tabs[0]:
     st.subheader("Animation (fixed 50 FPS)")
     run_anim = st.button("Run simulation & render animation")
     if run_anim:
-        with st.spinner("Simulating and rendering..."):
-            # 1) Simulate physics with the chosen dt
-            t, x1, y1, x2, y2 = simulate(theta1, theta2, m1, m2, L1, L2, g, duration, dt)
+        # ---- Progress UI (added) ----
+        progress_label = st.empty()
+        progress = st.progress(0)
 
-            # 2) Resample deterministically to exactly frames_out = round(Duration × 50)
-            frames_out = int(round(duration * FIXED_FPS))
+        # ---- Rough duration estimates for progress pacing ----
+        # Number of simulation points ~ duration/dt
+        N_sim = max(1, int(np.ceil(duration / dt)))
+        # Phase percentage ranges
+        P_SIM_START,  P_SIM_END   = 0, 65   # simulate (odeint)
+        P_RES_START,  P_RES_END   = 65, 75  # resample
+        P_BUILD_START, P_BUILD_END = 75, 85 # build animation
+        P_SAVE_START,  P_SAVE_END  = 85, 100 # save file
+
+        # Conservative timing models (tune if desired for your machine)
+        a_sim, b_sim = 2.0e-5, 0.15              # seconds ~ a*N + b
+        est_sim_s = a_sim * N_sim + b_sim
+
+        frames_out = int(round(duration * FIXED_FPS))
+        c_save, d_save = 1.6e-3, 0.2             # seconds ~ c*frames + d
+        est_save_s = c_save * frames_out + d_save
+
+        with st.spinner("Simulating and rendering..."):
+            # --- 1) SIMULATE in background (so UI can progress)
+            def _simulate():
+                return simulate(theta1, theta2, m1, m2, L1, L2, g, duration, dt)
+
+            th_sim, res_sim = run_in_thread(_simulate)
+            drive_progress_while_thread(progress, progress_label, th_sim,
+                                        P_SIM_START, P_SIM_END, est_sim_s, "Simulating")
+            if res_sim["error"]:
+                progress_label.error(f"Simulation failed: {res_sim['error']}")
+                st.stop()
+
+            t, x1, y1, x2, y2 = res_sim["result"]
+
+            # --- 2) RESAMPLE (fast)
+            progress_label.info(f"Resampling … {P_RES_START}%")
+            progress.progress(P_RES_START)
             idx = resample_indices(len(t), frames_out)
             x1_s, y1_s, x2_s, y2_s = x1[idx], y1[idx], x2[idx], y2[idx]
+            time.sleep(0.05)  # small visual step
+            progress.progress(P_RES_END)
+            progress_label.info(f"Resampling … {P_RES_END}%")
 
-            # 3) Build blitted animation (fast & predictable)
+            # --- 3) BUILD animation (fast)
+            progress_label.info(f"Building animation … {P_BUILD_START}%")
+            progress.progress(P_BUILD_START)
             fig, ani = build_animation(
                 x1_s, y1_s, x2_s, y2_s,
                 show_upper_path=show_upper_path,
@@ -285,40 +356,64 @@ with tabs[0]:
                 trail_len=None if trail_len == 0 else int(trail_len),
                 repeat_preview=loop_gif if writer_label.startswith("GIF") else True
             )
+            time.sleep(0.05)
+            progress.progress(P_BUILD_END)
+            progress_label.info(f"Building animation … {P_BUILD_END}%")
 
-            # 4) Save & preview (use bytes to avoid browser caching)
+            # --- 4) SAVE (GIF/MP4) in background with progress
             use_gif = writer_label.startswith("GIF") or os.path.splitext(outfile_name)[1].lower() == ".gif"
 
             if use_gif:
                 with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as f:
                     gif_path = f.name
-                loop_meta = 0 if loop_gif else 1  # 0 = loop, 1 = play once
-                writer = PillowWriter(fps=FIXED_FPS, metadata={'loop': loop_meta})
-                ani.save(gif_path, writer=writer)
-                plt.close(fig)
 
-                with open(gif_path, "rb") as f:
+                def _save_gif():
+                    loop_meta = 0 if loop_gif else 1  # 0 = loop, 1 = play once
+                    writer = PillowWriter(fps=FIXED_FPS, metadata={'loop': loop_meta})
+                    ani.save(gif_path, writer=writer)
+                    plt.close(fig)
+                    return gif_path
+
+                th_save, res_save = run_in_thread(_save_gif)
+                drive_progress_while_thread(progress, progress_label, th_save,
+                                            P_SAVE_START, P_SAVE_END, est_save_s, "Saving GIF")
+                if res_save["error"]:
+                    progress_label.error(f"Saving failed: {res_save['error']}")
+                    st.stop()
+
+                with open(res_save["result"], "rb") as f:
                     gif_bytes = f.read()
                 st.image(gif_bytes, caption=f"Animation (GIF, {FIXED_FPS} FPS)", width=preview_width)
-
-                with open(gif_path, "rb") as f:
+                with open(res_save["result"], "rb") as f:
                     st.download_button("Download GIF", data=f.read(),
                                        file_name=outfile_name or "pendulum.gif", mime="image/gif")
-
             else:
                 with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
                     mp4_path = f.name
-                writer = FFMpegWriter(fps=FIXED_FPS)
-                ani.save(mp4_path, writer=writer)
-                plt.close(fig)
 
-                with open(mp4_path, "rb") as f:
+                def _save_mp4():
+                    writer = FFMpegWriter(fps=FIXED_FPS)
+                    ani.save(mp4_path, writer=writer)
+                    plt.close(fig)
+                    return mp4_path
+
+                th_save, res_save = run_in_thread(_save_mp4)
+                drive_progress_while_thread(progress, progress_label, th_save,
+                                            P_SAVE_START, P_SAVE_END, est_save_s, "Saving MP4")
+                if res_save["error"]:
+                    progress_label.error(f"Saving failed: {res_save['error']}")
+                    st.stop()
+
+                with open(res_save["result"], "rb") as f:
                     mp4_bytes = f.read()
                 st.video(mp4_bytes)
-
-                with open(mp4_path, "rb") as f:
+                with open(res_save["result"], "rb") as f:
                     st.download_button("Download MP4", data=f.read(),
                                        file_name=outfile_name or "pendulum.mp4", mime="video/mp4")
+
+        # Finalize progress
+        progress.progress(100)
+        progress_label.success("Done – 100%")
 
 with tabs[1]:
     st.subheader("Angle–Time Plot")
@@ -337,4 +432,3 @@ st.caption(
     "Note: GIF playback in browsers is typically capped by a ~20 ms minimum frame delay (≈ 50 FPS). "
     "MP4 respects the encoded FPS. Uses blitting for fast rendering."
 )
-
