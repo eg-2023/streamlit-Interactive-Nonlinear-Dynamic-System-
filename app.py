@@ -96,7 +96,7 @@ def build_animation(t, x1, y1, x2, y2,
             ax.plot(
                 trail1_x,
                 trail1_y,
-                linestyle='--',
+                linestyle='-',
                 linewidth=1,
                 color='#1f77b4',
                 label='Upper path'
@@ -108,7 +108,7 @@ def build_animation(t, x1, y1, x2, y2,
             ax.plot(
                 trail2_x,
                 trail2_y,
-                linestyle='--',
+                linestyle='-',
                 linewidth=1,
                 color='#ff7f0e',
                 label='Lower path'
@@ -268,6 +268,7 @@ with tabs[1]:
         st.download_button("Download PNG", data=png_bytes, file_name="angles.png", mime="image/png")
 
 st.caption("Tip: GIF works without FFmpeg. For MP4, install FFmpeg and choose MP4 in the sidebar.")
+
 
 
 
