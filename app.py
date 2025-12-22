@@ -4,14 +4,12 @@
 Streamlit GUI for Interactive Simulation and Visualization of Chaotic Nonlinear Behavior of a Double Pendulum Using Python:
 - Animation (GIF via Pillow; MP4 via FFmpeg)
 - Angle–time plot
-
 Run: streamlit run app.py
 """
 import os
 import io
 import tempfile
 import numpy as np
-
 import matplotlib
 matplotlib.use("Agg")  # Headless backend for Streamlit
 import matplotlib.pyplot as plt
@@ -19,10 +17,9 @@ from matplotlib.animation import FuncAnimation, FFMpegWriter, PillowWriter
 from scipy.integrate import odeint
 import streamlit as st
 
-
-# ------------------------------
+# ---------------------------------------------------------------
 # Physics and simulation (cached)
-# ------------------------------
+# ---------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def simulate(theta1_deg, theta2_deg, m1, m2, L1, L2, g, duration, dt):
     """Integrate double-pendulum equations and return time + coordinates sampled at dt."""
@@ -58,7 +55,7 @@ def simulate(theta1_deg, theta2_deg, m1, m2, L1, L2, g, duration, dt):
 
         return [dtheta1, domega1, dtheta2, domega2]
 
-    # Number of physics samples governed by duration and dt
+    # Samples governed by duration and dt (endpoint excluded)
     t = np.arange(0.0, duration, dt)
     initial_state = [theta1_0, omega1_0, theta2_0, omega2_0]
     sol = odeint(derivs, initial_state, t)
@@ -67,87 +64,101 @@ def simulate(theta1_deg, theta2_deg, m1, m2, L1, L2, g, duration, dt):
     y1 = -L1 * np.cos(sol[:, 0])
     x2 = x1 + L2 * np.sin(sol[:, 2])
     y2 = y1 - L2 * np.cos(sol[:, 2])
+
     return t, x1, y1, x2, y2
 
-
-# ------------------------------
-# Deterministic resampling for exact playback duration (no FPS control in UI)
-# ------------------------------
-def resample_to_fixed_frame_count(x: np.ndarray, frames_out: int) -> np.ndarray:
-    """
-    Resample a 1D array to exactly frames_out samples by nearest-index selection.
-    Guarantees a fixed output frame count without interpolation artifacts.
-    """
-    n = len(x)
+# ---------------------------------------------------------------
+# Deterministic resampling to exact frame count
+# ---------------------------------------------------------------
+def resample_indices(n_in: int, frames_out: int) -> np.ndarray:
+    """Return integer indices (len = frames_out) evenly spanning [0, n_in-1]."""
     frames_out = max(1, int(frames_out))
-    if n == frames_out:
-        return x.copy()
-    idx = np.linspace(0, n - 1, frames_out)
-    idx_round = np.clip(np.round(idx).astype(int), 0, n - 1)
-    return x[idx_round]
+    if n_in <= 1:
+        return np.array([0] * frames_out, dtype=int)
+    idx = np.linspace(0, n_in - 1, frames_out)
+    return np.clip(idx.round().astype(int), 0, n_in - 1)
 
-
-def resample_trajectory(t, x1, y1, x2, y2, frames_out):
-    """Resample all series to exactly frames_out samples."""
-    t_out = resample_to_fixed_frame_count(t, frames_out)
-    x1_out = resample_to_fixed_frame_count(x1, frames_out)
-    y1_out = resample_to_fixed_frame_count(y1, frames_out)
-    x2_out = resample_to_fixed_frame_count(x2, frames_out)
-    y2_out = resample_to_fixed_frame_count(y2, frames_out)
-    return t_out, x1_out, y1_out, x2_out, y2_out
-
-
-# ------------------------------
-# Animation builder (preview timing from desired playback rate)
-# ------------------------------
+# ---------------------------------------------------------------
+# Animation builder (blitting + exact duration via FPS)
+# ---------------------------------------------------------------
 def build_animation(
     x1, y1, x2, y2,
     show_upper_path=False, show_lower_path=True,
     title="Double Pendulum",
-    preview_frames_per_second=30,  # internal, derived automatically
+    fps=30,
+    trail_len=None,       # None → full trail; else show last N points
     repeat_preview=True
 ):
+    """Create a blitted animation. Inputs are already resampled to desired frame count."""
     fig, ax = plt.subplots(figsize=(6, 6))
 
-    max_extent = max(np.max(np.abs(x2)), np.max(np.abs(y2)), 1.0)
-    max_extent = max(max_extent, 1.2)
-    x_min, x_max, y_min, y_max = (-max_extent, max_extent, -max_extent, max_extent)
+    # Limits
+    max_extent = max(np.max(np.abs(x2)), np.max(np.abs(y2)), 1.2)
+    ax.set_xlim(-max_extent, max_extent)
+    ax.set_ylim(-max_extent, max_extent)
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(True, alpha=0.25)
+    ax.set_title(title)
 
-    trail1_x, trail1_y = [], []
-    trail2_x, trail2_y = [], []
+    # Artists: rods and trails
+    rod1, = ax.plot([], [], 'o-', lw=2, color='#1f77b4', zorder=3)  # origin -> (x1,y1)
+    rod2, = ax.plot([], [], 'o-', lw=2, color='#ff7f0e', zorder=3)  # (x1,y1) -> (x2,y2)
 
-    def update(frame):
-        ax.clear()
-        ax.set_xlim(x_min, x_max)
-        ax.set_ylim(y_min, y_max)
-        ax.set_aspect("equal", adjustable="box")
-        ax.grid(True, alpha=0.25)
+    trail_upper = None
+    trail_lower = None
+    if show_upper_path:
+        trail_upper, = ax.plot([], [], '-', lw=1, color='#1f77b4', zorder=1, label='Upper path')
+    if show_lower_path:
+        trail_lower, = ax.plot([], [], '-', lw=1, color='#ff7f0e', zorder=1, label='Lower path')
+    if show_upper_path or show_lower_path:
+        ax.legend(loc='upper left', frameon=False)
 
-        if show_upper_path:
-            trail1_x.append(x1[frame]); trail1_y.append(y1[frame])
-            ax.plot(trail1_x, trail1_y,
-                    linestyle='-', linewidth=1, color='#1f77b4', label='Upper path')
+    # Precompute trail slicing helper
+    def slice_trail(arr, i):
+        if trail_len is None or trail_len <= 0:
+            return arr[:i+1]
+        start = max(0, i - trail_len + 1)
+        return arr[start:i+1]
 
-        if show_lower_path:
-            trail2_x.append(x2[frame]); trail2_y.append(y2[frame])
-            ax.plot(trail2_x, trail2_y,
-                    linestyle='-', linewidth=1, color='#ff7f0e', label='Lower path')
+    def init():
+        rod1.set_data([], [])
+        rod2.set_data([], [])
+        if trail_upper is not None:
+            trail_upper.set_data([], [])
+        if trail_lower is not None:
+            trail_lower.set_data([], [])
+        artists = [rod1, rod2]
+        if trail_upper is not None: artists.append(trail_upper)
+        if trail_lower is not None: artists.append(trail_lower)
+        return artists
 
-        ax.plot([0, x1[frame]], [0, y1[frame]], 'o-', lw=2, color='#1f77b4')
-        ax.plot([x1[frame], x2[frame]], [y1[frame], y2[frame]], 'o-', lw=2, color='#ff7f0e')
-        ax.set_title(title)
-        if show_upper_path or show_lower_path:
-            ax.legend(loc='upper left', frameon=False)
+    def update(i):
+        # Rods
+        rod1.set_data([0.0, x1[i]], [0.0, y1[i]])
+        rod2.set_data([x1[i], x2[i]], [y1[i], y2[i]])
 
-    # Preview interval derived from internal fps (ms per frame)
-    interval_ms = 1000.0 / max(1, int(round(preview_frames_per_second)))
-    ani = FuncAnimation(fig, update, frames=len(x1), interval=interval_ms, repeat=repeat_preview)
+        # Trails
+        if trail_upper is not None:
+            trail_upper.set_data(slice_trail(x1, i), slice_trail(y1, i))
+        if trail_lower is not None:
+            trail_lower.set_data(slice_trail(x2, i), slice_trail(y2, i))
+
+        artists = [rod1, rod2]
+        if trail_upper is not None: artists.append(trail_upper)
+        if trail_lower is not None: artists.append(trail_lower)
+        return artists
+
+    interval_ms = 1000.0 / max(1, int(round(fps)))
+    ani = FuncAnimation(
+        fig, update, init_func=init,
+        frames=len(x1), interval=interval_ms,
+        blit=True, repeat=repeat_preview
+    )
     return fig, ani
 
-
-# ------------------------------
+# ---------------------------------------------------------------
 # Angle–time plot
-# ------------------------------
+# ---------------------------------------------------------------
 def angle_time_plot(theta1_deg, theta2_deg, z1, z2, m1, m2, L1, L2, g, duration, points):
     theta1_0 = np.radians(theta1_deg)
     theta2_0 = np.radians(theta2_deg)
@@ -180,6 +191,7 @@ def angle_time_plot(theta1_deg, theta2_deg, z1, z2, m1, m2, L1, L2, g, duration,
 
     time = np.linspace(0.0, duration, points)
     sol = odeint(equations, state0, time)
+
     theta1 = (sol[:, 0] + np.pi) % (2 * np.pi) - np.pi
     theta2 = (sol[:, 2] + np.pi) % (2 * np.pi) - np.pi
 
@@ -199,21 +211,18 @@ def angle_time_plot(theta1_deg, theta2_deg, z1, z2, m1, m2, L1, L2, g, duration,
     buf.seek(0)
     return buf.getvalue()
 
-
-# ------------------------------
-# Streamlit UI (NO FPS in UI)
-# ------------------------------
+# ---------------------------------------------------------------
+# Streamlit UI
+# ---------------------------------------------------------------
 st.set_page_config(
     page_title="Interactive Simulation and Visualization of Chaotic Nonlinear Behavior of a Double Pendulum Using Python (Streamlit GUI)",
-    page_icon="🪀",
+    page_icon="🚀",
     layout="wide"
 )
-
-st.title("🪀 Interactive Simulation and Visualization of Chaotic Nonlinear Behavior of a Double Pendulum Using Python")
+st.title("🚀 Interactive Simulation and Visualization of Chaotic Nonlinear Behavior of a Double Pendulum Using Python")
 
 with st.sidebar:
     st.header("Parameters")
-
     theta1 = st.slider("Theta1 (°)", -180.0, 180.0, 60.0, 1.0)
     theta2 = st.slider("Theta2 (°)", -180.0, 180.0, -30.0, 1.0)
     m1 = st.slider("Mass m1", 0.1, 50.0, 2.0, 0.1)
@@ -223,33 +232,33 @@ with st.sidebar:
     g = st.slider("Gravity g (m/s²)", 1.0, 20.0, 9.81, 0.01)
 
     st.divider()
-    duration = st.slider("Duration (s)", 1.0, 30.0, 5.0, 0.5)  # This is the ONLY timing control
-    dt = st.slider("Δt (s)", 0.005, 0.1, 0.05, 0.005)
+    duration = st.slider("Duration (s)", 1.0, 30.0, 5.0, 0.5)
 
-    # Playback speed control only: Slower / Real / Faster (no FPS)
-    speed_label = st.select_slider(
-        "Playback speed",
-        options=["Slower", "Real", "Faster"],
-        value="Real",
-        help="Playback relative to real time. 'Real' lasts exactly Duration seconds."
-    )
-    speed_factor = {"Slower": 0.5, "Real": 1.0, "Faster": 2.0}[speed_label]
+    # dt slider: format + quantize to avoid duplicate-looking values
+    dt = st.slider("Δt (s)", 0.005, 0.1, 0.05, 0.005, format="%.3f")
+    dt = float(np.round(dt / 0.005) * 0.005)
+
+    # Playback FPS (decoupled from dt)
+    fps = st.slider("FPS (preview & export)", 5, 60, 30, 1)
 
     st.divider()
     show_upper_path = st.checkbox("Show upper path", value=False)
     show_lower_path = st.checkbox("Show lower path", value=True)
 
+    # Optional: limit the trail length to keep blitted updates light
+    trail_len = st.number_input("Trail length (points, 0 = full)", value=0, min_value=0, step=50)
+
     st.divider()
     writer_label = st.radio("Output format", ["GIF (Pillow)", "MP4 (FFmpeg)"], index=0)
-    outfile_name = st.text_input(
-        "Output filename",
-        value="pendulum.gif" if writer_label.startswith("GIF") else "pendulum.mp4"
-    )
+    # GIF loop control (most browsers honor this)
+    loop_gif = st.checkbox("Loop GIF in preview", value=True)
+
+    outfile_name = st.text_input("Output filename", value="pendulum.gif" if writer_label.startswith("GIF") else "pendulum.mp4")
 
     st.divider()
     preview_width = st.slider("Preview width (px)", 600, 1000, 600, 50)
 
-# Clamp preview width
+# Clamp preview width (safety)
 preview_width = int(np.clip(preview_width, 600, 1000))
 
 tabs = st.tabs(["🎞️ Animation", "📈 Angle–Time Plot"])
@@ -257,72 +266,65 @@ tabs = st.tabs(["🎞️ Animation", "📈 Angle–Time Plot"])
 with tabs[0]:
     st.subheader("Animation")
     run_anim = st.button("Run simulation & render animation")
-
     if run_anim:
         with st.spinner("Simulating and rendering..."):
-            # --- Simulate physics at dt
+            # 1) Simulate physics with the chosen dt
             t, x1, y1, x2, y2 = simulate(theta1, theta2, m1, m2, L1, L2, g, duration, dt)
 
-            # --- Internally derive the base playback rate from the simulation:
-            # base_rate = samples per second; ensures 'Real' lasts exactly duration
-            # We keep this internal; no FPS control is shown.
-            base_rate = max(1, int(round(len(t) / duration)))
+            # 2) Resample deterministically to exactly frames_out = round(Duration × FPS)
+            frames_out = int(round(duration * fps))
+            idx = resample_indices(len(t), frames_out)
+            x1_s, y1_s, x2_s, y2_s = x1[idx], y1[idx], x2[idx], y2[idx]
 
-            # Desired playback rate with speed factor (Slower/Real/Faster)
-            playback_rate = max(1, int(round(base_rate * speed_factor)))
-
-            # Exact output frame count independent of dt:
-            frames_out = max(1, int(round(duration * base_rate)))
-            t_s, x1_s, y1_s, x2_s, y2_s = resample_trajectory(t, x1, y1, x2, y2, frames_out)
-
-            # For preview, use playback_rate → interval_ms = 1000 / playback_rate
+            # 3) Build blitted animation (fast & predictable)
             fig, ani = build_animation(
                 x1_s, y1_s, x2_s, y2_s,
-                show_upper_path, show_lower_path,
+                show_upper_path=show_upper_path,
+                show_lower_path=show_lower_path,
                 title="Double Pendulum",
-                preview_frames_per_second=playback_rate,
-                repeat_preview=True
+                fps=fps,
+                trail_len=None if trail_len == 0 else int(trail_len),
+                repeat_preview=loop_gif if writer_label.startswith("GIF") else True
             )
 
-            # --- Save/export: writer rate equals playback_rate
-            ext = os.path.splitext(outfile_name)[1].lower()
-            use_gif = writer_label.startswith("GIF") or ext == ".gif"
+            # 4) Save & preview (use bytes to avoid browser caching)
+            use_gif = writer_label.startswith("GIF") or os.path.splitext(outfile_name)[1].lower() == ".gif"
 
             if use_gif:
                 with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as f:
                     gif_path = f.name
-                writer = PillowWriter(fps=playback_rate)
+                # Loop control: 0 = infinite; 1 = play once (browser behavior may vary slightly)
+                loop_meta = 0 if loop_gif else 1
+                writer = PillowWriter(fps=fps, metadata={'loop': loop_meta})
                 ani.save(gif_path, writer=writer)
                 plt.close(fig)
-                st.image(gif_path, caption="Animation (GIF)", width=preview_width)
+
                 with open(gif_path, "rb") as f:
-                    st.download_button(
-                        "Download GIF",
-                        data=f.read(),
-                        file_name=outfile_name or "pendulum.gif",
-                        mime="image/gif"
-                    )
+                    gif_bytes = f.read()
+                st.image(gif_bytes, caption="Animation (GIF)", width=preview_width)
+
+                with open(gif_path, "rb") as f:
+                    st.download_button("Download GIF", data=f.read(), file_name=outfile_name or "pendulum.gif", mime="image/gif")
+
             else:
                 with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
                     mp4_path = f.name
-                writer = FFMpegWriter(fps=playback_rate)
+                writer = FFMpegWriter(fps=fps)
                 ani.save(mp4_path, writer=writer)
                 plt.close(fig)
-                st.video(mp4_path)
+
                 with open(mp4_path, "rb") as f:
-                    st.download_button(
-                        "Download MP4",
-                        data=f.read(),
-                        file_name=outfile_name or "pendulum.mp4",
-                        mime="video/mp4"
-                    )
+                    mp4_bytes = f.read()
+                st.video(mp4_bytes)
+
+                with open(mp4_path, "rb") as f:
+                    st.download_button("Download MP4", data=f.read(), file_name=outfile_name or "pendulum.mp4", mime="video/mp4")
 
 with tabs[1]:
     st.subheader("Angle–Time Plot")
     z1 = st.number_input("Initial angular velocity z1 (rad/s)", value=0.0, step=0.1)
     z2 = st.number_input("Initial angular velocity z2 (rad/s)", value=0.0, step=0.1)
     points = st.slider("Number of points", 200, 5000, 1000, 100)
-
     run_plot = st.button("Compute & render plot")
     if run_plot:
         with st.spinner("Computing..."):
