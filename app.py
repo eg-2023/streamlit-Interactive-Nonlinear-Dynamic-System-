@@ -102,25 +102,40 @@ def run_in_thread(func, *args, **kwargs):
     th.start()
     return th, result
 
-def drive_progress_while_thread(progress, label_ph, thread, start_pct, end_pct, est_seconds, phase_label):
+def drive_progress(progress, label_ph, start_pct, end_pct, est_seconds, label):
     """
-    Animate progress from start_pct to end_pct while 'thread' is alive,
-    based on elapsed time vs. est_seconds. Updates roughly every 0.1 s.
+    Drive progress from start_pct to end_pct over ~est_seconds.
     """
     start_pct = float(start_pct); end_pct = float(end_pct)
     width = max(1e-6, est_seconds)
     t0 = time.perf_counter()
-    current = start_pct
+    while True:
+        elapsed = time.perf_counter() - t0
+        frac = min(1.0, elapsed / width)
+        current = start_pct + (end_pct - start_pct) * frac
+        progress.progress(int(current))
+        label_ph.info(f"Simulating & rendering … {int(current)}%")
+        if frac >= 1.0:
+            break
+        time.sleep(0.1)
+
+def drive_progress_while_thread(progress, label_ph, thread, start_pct, end_pct, est_seconds):
+    """
+    Drive progress while a background thread is alive.
+    """
+    start_pct = float(start_pct); end_pct = float(end_pct)
+    width = max(1e-6, est_seconds)
+    t0 = time.perf_counter()
     while thread.is_alive():
         elapsed = time.perf_counter() - t0
         frac = min(1.0, elapsed / width)
         current = start_pct + (end_pct - start_pct) * frac
         progress.progress(int(current))
-        label_ph.info(f"{phase_label} … {int(current)}%")
+        label_ph.info(f"Simulating & rendering … {int(current)}%")
         time.sleep(0.1)
-    # Ensure we end at end_pct
+    # ensure we end at end_pct
     progress.progress(int(end_pct))
-    label_ph.info(f"{phase_label} … {int(end_pct)}%")
+    label_ph.info(f"Simulating & rendering … {int(end_pct)}%")
 
 # ------------------------------
 # Animation builder (blitting + exact duration via fixed 50 FPS)
@@ -300,26 +315,26 @@ with tabs[0]:
     st.subheader("Animation (fixed 50 FPS)")
     run_anim = st.button("Run simulation & render animation")
     if run_anim:
-        # ---- Progress UI (added) ----
+        # ---- Unified Progress UI ----
         progress_label = st.empty()
         progress = st.progress(0)
 
-        # ---- Rough duration estimates for progress pacing ----
+        # ---- Rough duration estimates (for realistic pacing) ----
         # Number of simulation points ~ duration/dt
         N_sim = max(1, int(np.ceil(duration / dt)))
-        # Phase percentage ranges
-        P_SIM_START,  P_SIM_END   = 0, 65   # simulate (odeint)
-        P_RES_START,  P_RES_END   = 65, 75  # resample
-        P_BUILD_START, P_BUILD_END = 75, 85 # build animation
-        P_SAVE_START,  P_SAVE_END  = 85, 100 # save file
+        frames_out = int(round(duration * FIXED_FPS))
 
         # Conservative timing models (tune if desired for your machine)
         a_sim, b_sim = 2.0e-5, 0.15              # seconds ~ a*N + b
         est_sim_s = a_sim * N_sim + b_sim
-
-        frames_out = int(round(duration * FIXED_FPS))
         c_save, d_save = 1.6e-3, 0.2             # seconds ~ c*frames + d
         est_save_s = c_save * frames_out + d_save
+
+        # Percentage allocation per phase (total 100%)
+        P_SIM_START,  P_SIM_END   = 0, 65   # simulate (odeint)
+        P_RES_START,  P_RES_END   = 65, 75  # resample (fast)
+        P_BUILD_START, P_BUILD_END = 75, 85 # build animation (fast)
+        P_SAVE_START,  P_SAVE_END  = 85, 100 # save file
 
         with st.spinner("Simulating and rendering..."):
             # --- 1) SIMULATE in background (so UI can progress)
@@ -328,25 +343,21 @@ with tabs[0]:
 
             th_sim, res_sim = run_in_thread(_simulate)
             drive_progress_while_thread(progress, progress_label, th_sim,
-                                        P_SIM_START, P_SIM_END, est_sim_s, "Simulating")
+                                        P_SIM_START, P_SIM_END, est_sim_s)
             if res_sim["error"]:
                 progress_label.error(f"Simulation failed: {res_sim['error']}")
                 st.stop()
 
             t, x1, y1, x2, y2 = res_sim["result"]
 
-            # --- 2) RESAMPLE (fast)
-            progress_label.info(f"Resampling … {P_RES_START}%")
-            progress.progress(P_RES_START)
+            # --- 2) RESAMPLE (fast) — animate % over a short, fixed time
+            t_res = 0.2  # seconds to visually move the bar
+            drive_progress(progress, progress_label, P_RES_START, P_RES_END, t_res, "Resampling")
             idx = resample_indices(len(t), frames_out)
             x1_s, y1_s, x2_s, y2_s = x1[idx], y1[idx], x2[idx], y2[idx]
-            time.sleep(0.05)  # small visual step
-            progress.progress(P_RES_END)
-            progress_label.info(f"Resampling … {P_RES_END}%")
 
             # --- 3) BUILD animation (fast)
-            progress_label.info(f"Building animation … {P_BUILD_START}%")
-            progress.progress(P_BUILD_START)
+            drive_progress(progress, progress_label, P_BUILD_START, P_BUILD_END, 0.3, "Building animation")
             fig, ani = build_animation(
                 x1_s, y1_s, x2_s, y2_s,
                 show_upper_path=show_upper_path,
@@ -356,9 +367,6 @@ with tabs[0]:
                 trail_len=None if trail_len == 0 else int(trail_len),
                 repeat_preview=loop_gif if writer_label.startswith("GIF") else True
             )
-            time.sleep(0.05)
-            progress.progress(P_BUILD_END)
-            progress_label.info(f"Building animation … {P_BUILD_END}%")
 
             # --- 4) SAVE (GIF/MP4) in background with progress
             use_gif = writer_label.startswith("GIF") or os.path.splitext(outfile_name)[1].lower() == ".gif"
@@ -376,7 +384,7 @@ with tabs[0]:
 
                 th_save, res_save = run_in_thread(_save_gif)
                 drive_progress_while_thread(progress, progress_label, th_save,
-                                            P_SAVE_START, P_SAVE_END, est_save_s, "Saving GIF")
+                                            P_SAVE_START, P_SAVE_END, est_save_s)
                 if res_save["error"]:
                     progress_label.error(f"Saving failed: {res_save['error']}")
                     st.stop()
@@ -399,7 +407,7 @@ with tabs[0]:
 
                 th_save, res_save = run_in_thread(_save_mp4)
                 drive_progress_while_thread(progress, progress_label, th_save,
-                                            P_SAVE_START, P_SAVE_END, est_save_s, "Saving MP4")
+                                            P_SAVE_START, P_SAVE_END, est_save_s)
                 if res_save["error"]:
                     progress_label.error(f"Saving failed: {res_save['error']}")
                     st.stop()
