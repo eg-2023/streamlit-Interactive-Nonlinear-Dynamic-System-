@@ -244,16 +244,17 @@ def angle_time_plot(theta1_deg, theta2_deg, z1, z2, m1, m2, L1, L2, g, duration,
             - (m1 + m2) * g * np.sin(theta2)
         ) / denominator2
 
+    # Compute the ODE
         return [dtheta1_dt, dz1_dt, dtheta2_dt, dz2_dt]
 
-    time = np.linspace(0.0, duration, points)
-    sol = odeint(equations, state0, time)
+    time_axis = np.linspace(0.0, duration, points)
+    sol = odeint(equations, state0, time_axis)
     theta1 = (sol[:, 0] + np.pi) % (2 * np.pi) - np.pi
     theta2 = (sol[:, 2] + np.pi) % (2 * np.pi) - np.pi
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(time, theta1, label="Theta1 (upper)")
-    ax.plot(time, theta2, label="Theta2 (lower)")
+    ax.plot(time_axis, theta1, label="Theta1 (upper)")
+    ax.plot(time_axis, theta2, label="Theta2 (lower)")
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Angle (rad)")
     ax.set_title("Double Pendulum: Angle–Time Behavior")
@@ -343,6 +344,7 @@ with tabs[0]:
 
                 th_sim, res_sim = run_in_thread(_simulate)
                 drive_status_while_thread(status, th_sim, P_SIM_START, P_SIM_END, est_sim_s)
+                th_sim.join()  # extra safety before reading result
                 if res_sim["error"]:
                     status.update(state="error", label=f"Simulation failed: {res_sim['error']}")
                     st.stop()
@@ -382,14 +384,21 @@ with tabs[0]:
 
                     th_save, res_save = run_in_thread(_save_gif)
                     drive_status_while_thread(status, th_save, P_SAVE_START, P_SAVE_END, est_save_s)
-                    if res_save["error"]:
-                        status.update(state="error", label=f"Saving failed: {res_save['error']}")
+                    th_save.join()  # ensure thread finished
+                    save_path = res_save["result"]
+                    err = res_save["error"]
+
+                    # Robust guards:
+                    if err is not None:
+                        status.update(state="error", label=f"Saving failed: {err}")
+                        st.stop()
+                    if not isinstance(save_path, (str, bytes, os.PathLike)) or not os.path.exists(save_path):
+                        status.update(state="error", label="Saving failed: no output file produced. Try GIF or install FFmpeg for MP4.")
                         st.stop()
 
-                    with open(res_save["result"], "rb") as f:
-                        gif_bytes = f.read()
-                    st.image(gif_bytes, caption=f"Animation (GIF, {FIXED_FPS} FPS)", width=preview_width)
-                    with open(res_save["result"], "rb") as f:
+                    # Preview using file path (avoids open(...) TypeError)
+                    st.image(save_path, caption=f"Animation (GIF, {FIXED_FPS} FPS)", width=preview_width)
+                    with open(save_path, "rb") as f:
                         st.download_button("Download GIF", data=f.read(),
                                            file_name=outfile_name or "pendulum.gif", mime="image/gif")
                 else:
@@ -397,6 +406,7 @@ with tabs[0]:
                         mp4_path = f.name
 
                     def _save_mp4():
+                        # Requires ffmpeg available on PATH
                         writer = FFMpegWriter(fps=FIXED_FPS)
                         ani.save(mp4_path, writer=writer)
                         plt.close(fig)
@@ -404,14 +414,19 @@ with tabs[0]:
 
                     th_save, res_save = run_in_thread(_save_mp4)
                     drive_status_while_thread(status, th_save, P_SAVE_START, P_SAVE_END, est_save_s)
-                    if res_save["error"]:
-                        status.update(state="error", label=f"Saving failed: {res_save['error']}")
+                    th_save.join()
+                    save_path = res_save["result"]
+                    err = res_save["error"]
+
+                    if err is not None:
+                        status.update(state="error", label=f"Saving failed: {err}. FFmpeg may be missing. Try GIF or install FFmpeg.")
+                        st.stop()
+                    if not isinstance(save_path, (str, bytes, os.PathLike)) or not os.path.exists(save_path):
+                        status.update(state="error", label="Saving failed: no output file produced. FFmpeg may be missing.")
                         st.stop()
 
-                    with open(res_save["result"], "rb") as f:
-                        mp4_bytes = f.read()
-                    st.video(mp4_bytes)
-                    with open(res_save["result"], "rb") as f:
+                    st.video(save_path)
+                    with open(save_path, "rb") as f:
                         st.download_button("Download MP4", data=f.read(),
                                            file_name=outfile_name or "pendulum.mp4", mime="video/mp4")
 
@@ -430,6 +445,7 @@ with tabs[0]:
 
                 th_sim, res_sim = run_in_thread(_simulate)
                 drive_label_while_thread(percent_label, th_sim, P_SIM_START, P_SIM_END, est_sim_s)
+                th_sim.join()
                 if res_sim["error"]:
                     percent_label.error(f"Simulation failed: {res_sim['error']}")
                     st.stop()
@@ -469,14 +485,19 @@ with tabs[0]:
 
                     th_save, res_save = run_in_thread(_save_gif)
                     drive_label_while_thread(percent_label, th_save, P_SAVE_START, P_SAVE_END, est_save_s)
-                    if res_save["error"]:
-                        percent_label.error(f"Saving failed: {res_save['error']}")
+                    th_save.join()
+                    save_path = res_save["result"]
+                    err = res_save["error"]
+
+                    if err is not None:
+                        percent_label.error(f"Saving failed: {err}")
+                        st.stop()
+                    if not isinstance(save_path, (str, bytes, os.PathLike)) or not os.path.exists(save_path):
+                        percent_label.error("Saving failed: no output file produced. Try GIF or install FFmpeg for MP4.")
                         st.stop()
 
-                    with open(res_save["result"], "rb") as f:
-                        gif_bytes = f.read()
-                    st.image(gif_bytes, caption=f"Animation (GIF, {FIXED_FPS} FPS)", width=preview_width)
-                    with open(res_save["result"], "rb") as f:
+                    st.image(save_path, caption=f"Animation (GIF, {FIXED_FPS} FPS)", width=preview_width)
+                    with open(save_path, "rb") as f:
                         st.download_button("Download GIF", data=f.read(),
                                            file_name=outfile_name or "pendulum.gif", mime="image/gif")
                 else:
@@ -491,14 +512,19 @@ with tabs[0]:
 
                     th_save, res_save = run_in_thread(_save_mp4)
                     drive_label_while_thread(percent_label, th_save, P_SAVE_START, P_SAVE_END, est_save_s)
-                    if res_save["error"]:
-                        percent_label.error(f"Saving failed: {res_save['error']}")
+                    th_save.join()
+                    save_path = res_save["result"]
+                    err = res_save["error"]
+
+                    if err is not None:
+                        percent_label.error(f"Saving failed: {err}. FFmpeg may be missing. Try GIF or install FFmpeg.")
+                        st.stop()
+                    if not isinstance(save_path, (str, bytes, os.PathLike)) or not os.path.exists(save_path):
+                        percent_label.error("Saving failed: no output file produced. FFmpeg may be missing.")
                         st.stop()
 
-                    with open(res_save["result"], "rb") as f:
-                        mp4_bytes = f.read()
-                    st.video(mp4_bytes)
-                    with open(res_save["result"], "rb") as f:
+                    st.video(save_path)
+                    with open(save_path, "rb") as f:
                         st.download_button("Download MP4", data=f.read(),
                                            file_name=outfile_name or "pendulum.mp4", mime="video/mp4")
 
