@@ -2,7 +2,7 @@
 #!/usr/bin/env python3
 """
 Streamlit GUI for Interactive Simulation and Visualization of Chaotic Nonlinear Behavior of a Double Pendulum Using Python:
-- Animation (GIF via Pillow; MP4 via FFmpeg)
+- Animation (GIF via Pillow; MP4 via FFmpeg), fixed at 50 FPS
 - Angle–time plot
 Run: streamlit run app.py
 """
@@ -16,6 +16,8 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, FFMpegWriter, PillowWriter
 from scipy.integrate import odeint
 import streamlit as st
+
+FIXED_FPS = 50  # match typical browser GIF min-frame-delay (~20 ms) → ~50 FPS
 
 # ---------------------------------------------------------------
 # Physics and simulation (cached)
@@ -79,13 +81,13 @@ def resample_indices(n_in: int, frames_out: int) -> np.ndarray:
     return np.clip(idx.round().astype(int), 0, n_in - 1)
 
 # ---------------------------------------------------------------
-# Animation builder (blitting + exact duration via FPS)
+# Animation builder (blitting + exact duration via fixed 50 FPS)
 # ---------------------------------------------------------------
 def build_animation(
     x1, y1, x2, y2,
     show_upper_path=False, show_lower_path=True,
     title="Double Pendulum",
-    fps=30,
+    fps=FIXED_FPS,
     trail_len=None,       # None → full trail; else show last N points
     repeat_preview=True
 ):
@@ -148,7 +150,7 @@ def build_animation(
         if trail_lower is not None: artists.append(trail_lower)
         return artists
 
-    interval_ms = 1000.0 / max(1, int(round(fps)))
+    interval_ms = 1000.0 / fps
     ani = FuncAnimation(
         fig, update, init_func=init,
         frames=len(x1), interval=interval_ms,
@@ -238,19 +240,16 @@ with st.sidebar:
     dt = st.slider("Δt (s)", 0.005, 0.1, 0.05, 0.005, format="%.3f")
     dt = float(np.round(dt / 0.005) * 0.005)
 
-    # Playback FPS (decoupled from dt)
-    fps = st.slider("FPS (preview & export)", 5, 60, 30, 1)
-
     st.divider()
     show_upper_path = st.checkbox("Show upper path", value=False)
     show_lower_path = st.checkbox("Show lower path", value=True)
 
-    # Optional: limit the trail length to keep blitted updates light
-    trail_len = st.number_input("Trail length (points, 0 = full)", value=0, min_value=0, step=50)
+    # Optional: limit the trail length to keep blitted updates light (0 = full trail)
+    trail_len = st.number_input("Trail length (points, 0 = full)", value=250, min_value=0, step=50)
 
     st.divider()
     writer_label = st.radio("Output format", ["GIF (Pillow)", "MP4 (FFmpeg)"], index=0)
-    # GIF loop control (most browsers honor this)
+    # GIF loop control (most browsers honor this; 0 = infinite, 1 = play once)
     loop_gif = st.checkbox("Loop GIF in preview", value=True)
 
     outfile_name = st.text_input("Output filename", value="pendulum.gif" if writer_label.startswith("GIF") else "pendulum.mp4")
@@ -264,15 +263,15 @@ preview_width = int(np.clip(preview_width, 600, 1000))
 tabs = st.tabs(["🎞️ Animation", "📈 Angle–Time Plot"])
 
 with tabs[0]:
-    st.subheader("Animation")
+    st.subheader("Animation (fixed 50 FPS)")
     run_anim = st.button("Run simulation & render animation")
     if run_anim:
         with st.spinner("Simulating and rendering..."):
             # 1) Simulate physics with the chosen dt
             t, x1, y1, x2, y2 = simulate(theta1, theta2, m1, m2, L1, L2, g, duration, dt)
 
-            # 2) Resample deterministically to exactly frames_out = round(Duration × FPS)
-            frames_out = int(round(duration * fps))
+            # 2) Resample deterministically to exactly frames_out = round(Duration × 50)
+            frames_out = int(round(duration * FIXED_FPS))
             idx = resample_indices(len(t), frames_out)
             x1_s, y1_s, x2_s, y2_s = x1[idx], y1[idx], x2[idx], y2[idx]
 
@@ -282,7 +281,7 @@ with tabs[0]:
                 show_upper_path=show_upper_path,
                 show_lower_path=show_lower_path,
                 title="Double Pendulum",
-                fps=fps,
+                fps=FIXED_FPS,
                 trail_len=None if trail_len == 0 else int(trail_len),
                 repeat_preview=loop_gif if writer_label.startswith("GIF") else True
             )
@@ -293,23 +292,23 @@ with tabs[0]:
             if use_gif:
                 with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as f:
                     gif_path = f.name
-                # Loop control: 0 = infinite; 1 = play once (browser behavior may vary slightly)
-                loop_meta = 0 if loop_gif else 1
-                writer = PillowWriter(fps=fps, metadata={'loop': loop_meta})
+                loop_meta = 0 if loop_gif else 1  # 0 = loop, 1 = play once
+                writer = PillowWriter(fps=FIXED_FPS, metadata={'loop': loop_meta})
                 ani.save(gif_path, writer=writer)
                 plt.close(fig)
 
                 with open(gif_path, "rb") as f:
                     gif_bytes = f.read()
-                st.image(gif_bytes, caption="Animation (GIF)", width=preview_width)
+                st.image(gif_bytes, caption=f"Animation (GIF, {FIXED_FPS} FPS)", width=preview_width)
 
                 with open(gif_path, "rb") as f:
-                    st.download_button("Download GIF", data=f.read(), file_name=outfile_name or "pendulum.gif", mime="image/gif")
+                    st.download_button("Download GIF", data=f.read(),
+                                       file_name=outfile_name or "pendulum.gif", mime="image/gif")
 
             else:
                 with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
                     mp4_path = f.name
-                writer = FFMpegWriter(fps=fps)
+                writer = FFMpegWriter(fps=FIXED_FPS)
                 ani.save(mp4_path, writer=writer)
                 plt.close(fig)
 
@@ -318,7 +317,8 @@ with tabs[0]:
                 st.video(mp4_bytes)
 
                 with open(mp4_path, "rb") as f:
-                    st.download_button("Download MP4", data=f.read(), file_name=outfile_name or "pendulum.mp4", mime="video/mp4")
+                    st.download_button("Download MP4", data=f.read(),
+                                       file_name=outfile_name or "pendulum.mp4", mime="video/mp4")
 
 with tabs[1]:
     st.subheader("Angle–Time Plot")
@@ -332,4 +332,8 @@ with tabs[1]:
             st.image(png_bytes, caption="Angle–Time plot", width=preview_width)
             st.download_button("Download PNG", data=png_bytes, file_name="angles.png", mime="image/png")
 
-st.caption("Tip: GIF works without FFmpeg. For MP4, install FFmpeg and choose MP4 in the sidebar.")
+# Informative tip about GIF frame-delay limits and performance
+st.caption(
+    "Note: GIF playback in browsers is typically capped by a ~20 ms minimum frame delay (≈ 50 FPS). "
+    "MP4 respects the encoded FPS. Uses blitting for fast rendering."
+)
