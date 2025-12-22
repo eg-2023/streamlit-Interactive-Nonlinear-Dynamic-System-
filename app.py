@@ -234,7 +234,7 @@ with st.sidebar:
     g = st.slider("Gravity g (m/s²)", 1.0, 20.0, 9.81, 0.01)
 
     st.divider()
-    duration = st.slider("Duration (s)", 1.0, 30.0, 5.0, 0.5)
+    duration = st.slider("Duration (s)", 1.0, 15.0, 5.0, 0.5)
 
     # dt slider: format + quantize to avoid duplicate-looking values
     dt = st.slider("Δt (s)", 0.005, 0.1, 0.05, 0.005, format="%.3f")
@@ -337,3 +337,4 @@ st.caption(
     "Note: GIF playback in browsers is typically capped by a ~20 ms minimum frame delay (≈ 50 FPS). "
     "MP4 respects the encoded FPS. Uses blitting for fast rendering."
 )
+
