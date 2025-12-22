@@ -216,7 +216,12 @@ with st.sidebar:
     outfile_name = st.text_input("Output filename", value="pendulum.gif" if writer_label.startswith("GIF") else "pendulum.mp4")
 
     st.divider()
-    preview_width = st.slider("Preview width (px)", 300, 1000, 600, 50)
+    #preview_width = st.slider("Preview width (px)", 300, 1000, 600, 50)
+    preview_width = st.slider("Preview width (px)", 600, 1000, 600, 50)  #add 0
+
+
+# Clamp to be extra-safe - add 1
+preview_width = int(np.clip(preview_width, 600, 1000))
 
 tabs = st.tabs(["🎞️ Animation", "📈 Angle–Time Plot"])
 
@@ -268,6 +273,7 @@ with tabs[1]:
         st.download_button("Download PNG", data=png_bytes, file_name="angles.png", mime="image/png")
 
 st.caption("Tip: GIF works without FFmpeg. For MP4, install FFmpeg and choose MP4 in the sidebar.")
+
 
 
 
