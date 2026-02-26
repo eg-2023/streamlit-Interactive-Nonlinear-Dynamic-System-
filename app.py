@@ -137,11 +137,12 @@ def build_animation(
 
 
 # ---------------------------------------------------------------
-# Angle–time plot
+# Angle–time plot (omega1, omega2 as initial angular velocities)
 # ---------------------------------------------------------------
-def angle_time_plot(theta1_deg, theta2_deg, z1, z2, m1, m2, L1, L2, g, duration, points):
+def angle_time_plot(theta1_deg, theta2_deg, omega1, omega2, m1, m2, L1, L2, g, duration, points):
     theta1_0 = np.radians(theta1_deg)
     theta2_0 = np.radians(theta2_deg)
+
     sol = odeint(
         lambda s, t: [
             s[1],
@@ -160,7 +161,7 @@ def angle_time_plot(theta1_deg, theta2_deg, z1, z2, m1, m2, L1, L2, g, duration,
                 + m2 * L2 * s[3]**2 * np.sin(s[0] - s[2]) * np.cos(s[0] - s[2])
             ) / ((L2 / L1) * ((m1 + m2) * L1 - m2 * L1 * np.cos(s[0] - s[2])**2))
         ],
-        [theta1_0, z1, theta2_0, z2],
+        [theta1_0, omega1, theta2_0, omega2],
         np.linspace(0, duration, points)
     )
 
@@ -223,7 +224,6 @@ with tabs[0]:
         with st.spinner("Simulating and rendering..."):
             t, x1, y1, x2, y2 = simulate(theta1, theta2, m1, m2, L1, L2, g, duration, dt)
 
-            # Resample for consistent FPS
             frames_out = int(round(duration * FIXED_FPS))
             idx = np.linspace(0, len(t) - 1, frames_out).round().astype(int)
             idx = np.clip(idx, 0, len(t) - 1)
@@ -249,12 +249,12 @@ with tabs[0]:
 
 with tabs[1]:
     st.subheader("Angle–Time Plot")
-    z1 = st.number_input("Initial angular velocity z1 (rad/s)", value=0.0, step=0.1)
-    z2 = st.number_input("Initial angular velocity z2 (rad/s)", value=0.0, step=0.1)
+    omega1 = st.number_input("Initial angular velocity ω1 (rad/s)", value=0.0, step=0.1)
+    omega2 = st.number_input("Initial angular velocity ω2 (rad/s)", value=0.0, step=0.1)
     points = st.slider("Number of points", 200, 5000, 1000, 100)
 
     if st.button("Compute & render plot"):
         with st.spinner("Computing..."):
-            png_bytes = angle_time_plot(theta1, theta2, z1, z2, m1, m2, L1, L2, g, duration, points)
+            png_bytes = angle_time_plot(theta1, theta2, omega1, omega2, m1, m2, L1, L2, g, duration, points)
             st.image(png_bytes, caption="Angle–Time plot", width=preview_width)
             st.download_button("Download PNG", data=png_bytes, file_name="angles.png", mime="image/png")
