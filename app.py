@@ -16,14 +16,14 @@ from matplotlib.animation import FuncAnimation, PillowWriter
 from scipy.integrate import odeint
 import streamlit as st
 
-FIXED_FPS = 50  # match typical browser GIF min-frame-delay (~20 ms) → ~50 FPS
+FIXED_FPS = 50  # fixed animation speed
 
 # ---------------------------------------------------------------
 # Physics and simulation (cached)
 # ---------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def simulate(theta1_deg, theta2_deg, m1, m2, L1, L2, g, duration, dt):
-    """Integrate double-pendulum equations and return time + coordinates sampled at dt."""
+    """Integrate double-pendulum equations and return time + coordinates."""
     theta1_0 = np.radians(theta1_deg)
     theta2_0 = np.radians(theta2_deg)
     omega1_0 = 0.0
@@ -57,8 +57,7 @@ def simulate(theta1_deg, theta2_deg, m1, m2, L1, L2, g, duration, dt):
         return [dtheta1, domega1, dtheta2, domega2]
 
     t = np.arange(0.0, duration, dt)
-    initial_state = [theta1_0, omega1_0, theta2_0, omega2_0]
-    sol = odeint(derivs, initial_state, t)
+    sol = odeint(derivs, [theta1_0, omega1_0, theta2_0, omega2_0], t)
 
     x1 = L1 * np.sin(sol[:, 0])
     y1 = -L1 * np.cos(sol[:, 0])
@@ -69,19 +68,7 @@ def simulate(theta1_deg, theta2_deg, m1, m2, L1, L2, g, duration, dt):
 
 
 # ---------------------------------------------------------------
-# Deterministic resampling to exact frame count
-# ---------------------------------------------------------------
-def resample_indices(n_in: int, frames_out: int) -> np.ndarray:
-    """Return integer indices (len = frames_out) evenly spanning [0, n_in-1]."""
-    frames_out = max(1, int(frames_out))
-    if n_in <= 1:
-        return np.array([0] * frames_out, dtype=int)
-    idx = np.linspace(0, n_in - 1, frames_out)
-    return np.clip(idx.round().astype(int), 0, n_in - 1)
-
-
-# ---------------------------------------------------------------
-# Animation builder (blitting + exact duration via fixed 50 FPS)
+# Animation builder (blue upper trail, orange lower trail)
 # ---------------------------------------------------------------
 def build_animation(
     x1, y1, x2, y2,
@@ -90,7 +77,6 @@ def build_animation(
     fps=FIXED_FPS,
     trail_len=None
 ):
-    """Create a blitted animation. Inputs are already resampled to desired frame count."""
     fig, ax = plt.subplots(figsize=(6, 6))
 
     max_extent = max(np.max(np.abs(x2)), np.max(np.abs(y2)), 1.2)
@@ -100,15 +86,15 @@ def build_animation(
     ax.grid(True, alpha=0.25)
     ax.set_title(title)
 
-    rod1, = ax.plot([], [], 'o-', lw=2, zorder=3)
-    rod2, = ax.plot([], [], 'o-', lw=2, zorder=3)
+    rod1, = ax.plot([], [], 'o-', lw=2)
+    rod2, = ax.plot([], [], 'o-', lw=2)
 
     trail_upper = None
     trail_lower = None
     if show_upper_path:
-        trail_upper, = ax.plot([], [], '-', lw=1, zorder=1)
+        trail_upper, = ax.plot([], [], '-', lw=1, color='#1f77b4')  # blue
     if show_lower_path:
-        trail_lower, = ax.plot([], [], '-', lw=1, zorder=1)
+        trail_lower, = ax.plot([], [], '-', lw=1, color='#ff7f0e')  # orange
 
     def slice_trail(arr, i):
         if trail_len is None or trail_len <= 0:
@@ -135,8 +121,10 @@ def build_animation(
             trail_lower.set_data(slice_trail(x2, i), slice_trail(y2, i))
 
         artists = [rod1, rod2]
-        if trail_upper is not None: artists.append(trail_upper)
-        if trail_lower is not None: artists.append(trail_lower)
+        if trail_upper is not None:
+            artists.append(trail_upper)
+        if trail_lower is not None:
+            artists.append(trail_lower)
         return artists
 
     interval_ms = 1000.0 / fps
@@ -154,42 +142,32 @@ def build_animation(
 def angle_time_plot(theta1_deg, theta2_deg, z1, z2, m1, m2, L1, L2, g, duration, points):
     theta1_0 = np.radians(theta1_deg)
     theta2_0 = np.radians(theta2_deg)
-    state0 = [theta1_0, z1, theta2_0, z2]
+    sol = odeint(
+        lambda s, t: [
+            s[1],
+            (
+                -m2 * L1 * s[1]**2 * np.sin(s[0] - s[2]) * np.cos(s[0] - s[2])
+                + m2 * g * np.sin(s[2]) * np.cos(s[0] - s[2])
+                - m2 * L2 * s[3]**2 * np.sin(s[0] - s[2])
+                - (m1 + m2) * g * np.sin(s[0])
+            ) / ((m1 + m2) * L1 - m2 * L1 * np.cos(s[0] - s[2])**2),
+            s[3],
+            (
+                (m1 + m2)
+                * (L1 * s[1]**2 * np.sin(s[0] - s[2])
+                   - g * np.sin(s[2])
+                   + g * np.sin(s[0]) * np.cos(s[0] - s[2]))
+                + m2 * L2 * s[3]**2 * np.sin(s[0] - s[2]) * np.cos(s[0] - s[2])
+            ) / ((L2 / L1) * ((m1 + m2) * L1 - m2 * L1 * np.cos(s[0] - s[2])**2))
+        ],
+        [theta1_0, z1, theta2_0, z2],
+        np.linspace(0, duration, points)
+    )
 
-    def equations(state, t):
-        theta1, z1_, theta2, z2_ = state
-        delta = theta2 - theta1
-        denominator1 = (m1 + m2) * L1 - m2 * L1 * np.cos(delta) ** 2
-        denominator2 = (L2 / L1) * denominator1
-
-        dtheta1_dt = z1_
-        dtheta2_dt = z2_
-
-        dz1_dt = (
-            - m2 * L1 * z1_**2 * np.sin(delta) * np.cos(delta)
-            + m2 * g * np.sin(theta2) * np.cos(delta)
-            - m2 * L2 * z2_**2 * np.sin(delta)
-            - (m1 + m2) * g * np.sin(theta1)
-        ) / denominator1
-
-        dz2_dt = (
-            m2 * L2 * z2_**2 * np.sin(delta) * np.cos(delta)
-            + (m1 + m2) * g * np.sin(theta1) * np.cos(delta)
-            + (m1 + m2) * L1 * z1_**2 * np.sin(delta)
-            - (m1 + m2) * g * np.sin(theta2)
-        ) / denominator2
-
-        return [dtheta1_dt, dz1_dt, dtheta2_dt, dz2_dt]
-
-    time = np.linspace(0.0, duration, points)
-    sol = odeint(equations, state0, time)
-
-    theta1 = (sol[:, 0] + np.pi) % (2 * np.pi) - np.pi
-    theta2 = (sol[:, 2] + np.pi) % (2 * np.pi) - np.pi
-
+    time = np.linspace(0, duration, points)
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(time, theta1, label="Theta1 (upper)")
-    ax.plot(time, theta2, label="Theta2 (lower)")
+    ax.plot(time, sol[:, 0], label="Theta1 (upper)")
+    ax.plot(time, sol[:, 2], label="Theta2 (lower)")
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Angle (rad)")
     ax.set_title("Double Pendulum: Angle–Time Behavior")
@@ -208,11 +186,11 @@ def angle_time_plot(theta1_deg, theta2_deg, z1, z2, m1, m2, L1, L2, g, duration,
 # Streamlit UI
 # ---------------------------------------------------------------
 st.set_page_config(
-    page_title="Interactive Simulation and Visualization of Chaotic Nonlinear Behavior of a Double Pendulum Using Python (Streamlit GUI)",
+    page_title="Interactive Double Pendulum Simulation",
     page_icon="🚀",
     layout="wide"
 )
-st.title("Interactive Simulation and Visualization of Chaotic Nonlinear Behavior of a Double Pendulum Using Python")
+st.title("Interactive Double Pendulum Simulation")
 
 with st.sidebar:
     st.header("Parameters")
@@ -224,20 +202,15 @@ with st.sidebar:
     L2 = st.slider("Length L2", 0.1, 5.0, 1.0, 0.1)
     g = st.slider("Gravity g (m/s²)", 1.0, 20.0, 9.81, 0.01)
 
-    st.divider()
     duration = st.slider("Duration (s)", 1.0, 15.0, 5.0, 0.5)
-
     dt = st.slider("Δt (s)", 0.005, 0.1, 0.05, 0.005)
     dt = float(np.round(dt / 0.005) * 0.005)
 
-    st.divider()
     show_upper_path = st.checkbox("Show upper path", value=False)
     show_lower_path = st.checkbox("Show lower path", value=True)
-
     trail_len = st.number_input("Trail length (points, 0 = full)", value=250, min_value=0, step=50)
 
     outfile_name = st.text_input("Output filename", value="pendulum.gif")
-
     preview_width = st.slider("Preview width (px)", 600, 1000, 600, 50)
 
 preview_width = int(np.clip(preview_width, 600, 1000))
@@ -245,22 +218,20 @@ preview_width = int(np.clip(preview_width, 600, 1000))
 tabs = st.tabs(["Animation", "Angle–Time Plot"])
 
 with tabs[0]:
-    st.subheader("Animation (50 FPS)")
-    run_anim = st.button("Run simulation & render animation")
-    if run_anim:
+    st.subheader("Animation")
+    if st.button("Run simulation & render animation"):
         with st.spinner("Simulating and rendering..."):
             t, x1, y1, x2, y2 = simulate(theta1, theta2, m1, m2, L1, L2, g, duration, dt)
 
+            # Resample for consistent FPS
             frames_out = int(round(duration * FIXED_FPS))
-            idx = resample_indices(len(t), frames_out)
-            x1_s, y1_s, x2_s, y2_s = x1[idx], y1[idx], x2[idx], y2[idx]
+            idx = np.linspace(0, len(t) - 1, frames_out).round().astype(int)
+            idx = np.clip(idx, 0, len(t) - 1)
 
             fig, ani = build_animation(
-                x1_s, y1_s, x2_s, y2_s,
+                x1[idx], y1[idx], x2[idx], y2[idx],
                 show_upper_path=show_upper_path,
                 show_lower_path=show_lower_path,
-                title="Double Pendulum",
-                fps=FIXED_FPS,
                 trail_len=None if trail_len == 0 else int(trail_len)
             )
 
@@ -273,26 +244,17 @@ with tabs[0]:
 
             with open(gif_path, "rb") as f:
                 gif_bytes = f.read()
-            st.image(gif_bytes, caption=f"Animation (GIF, {FIXED_FPS} FPS)", width=preview_width)
-
-            with open(gif_path, "rb") as f:
-                st.download_button("Download GIF", data=f.read(),
-                                   file_name=outfile_name or "pendulum.gif",
-                                   mime="image/gif")
+            st.image(gif_bytes, caption="Animation (GIF)", width=preview_width)
+            st.download_button("Download GIF", data=gif_bytes, file_name=outfile_name, mime="image/gif")
 
 with tabs[1]:
     st.subheader("Angle–Time Plot")
     z1 = st.number_input("Initial angular velocity z1 (rad/s)", value=0.0, step=0.1)
     z2 = st.number_input("Initial angular velocity z2 (rad/s)", value=0.0, step=0.1)
     points = st.slider("Number of points", 200, 5000, 1000, 100)
-    run_plot = st.button("Compute & render plot")
-    if run_plot:
+
+    if st.button("Compute & render plot"):
         with st.spinner("Computing..."):
             png_bytes = angle_time_plot(theta1, theta2, z1, z2, m1, m2, L1, L2, g, duration, points)
             st.image(png_bytes, caption="Angle–Time plot", width=preview_width)
             st.download_button("Download PNG", data=png_bytes, file_name="angles.png", mime="image/png")
-
-st.caption(
-    "Note: GIF playback in browsers typically uses the GIF's own loop behavior. "
-    "Animation is rendered at a fixed 50 FPS for consistency."
-)
